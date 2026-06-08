@@ -13,4 +13,4 @@ COPY . .
 
 RUN python manage.py collectstatic --noinput || true
 
-CMD gunicorn config.wsgi:application --bind 0.0.0.0:$PORT
+CMD gunicorn config.wsgi:application --bind "0.0.0.0:${PORT:-8000}"
