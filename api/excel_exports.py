@@ -298,7 +298,7 @@ def render_document_bundle(
         # Las copiamos a nivel ZIP desde la plantilla original.
         _restore_xlsx_media(template_path, excel_output_path)
 
-        _generate_pdf(excel_output_path, pdf_output_path)
+        _generate_pdf(excel_output_path, pdf_output_path, document_id=output_stem, cell_writes=cell_writes)
 
         if not pdf_output_path.exists():
             raise ExcelTemplateExportError(
@@ -539,11 +539,20 @@ def _resolve_soffice_binary() -> str | None:
 # ── PDF generation (LibreOffice → native Excel fallback) ───────────────
 
 
-def _generate_pdf(excel_path: Path, pdf_path: Path) -> None:
+def _generate_pdf(
+    excel_path: Path,
+    pdf_path: Path,
+    *,
+    document_id: str = "",
+    cell_writes: "list[DocumentCellWrite] | None" = None,
+) -> None:
     if _try_libreoffice_pdf(excel_path, pdf_path):
         return
 
     if _try_native_excel_pdf(excel_path, pdf_path):
+        return
+
+    if cell_writes is not None and _try_fpdf2_pdf(pdf_path, document_id, cell_writes):
         return
 
     raise ExcelTemplateExportError(
@@ -672,6 +681,196 @@ def _try_windows_excel_pdf(
         return False
     finally:
         ps_path.unlink(missing_ok=True)
+
+
+# ── fpdf2 fallback ────────────────────────────────────────────────────
+
+
+def _try_fpdf2_pdf(
+    pdf_path: Path,
+    document_id: str,
+    cell_writes: "list[DocumentCellWrite]",
+) -> bool:
+    """Genera un PDF con fpdf2 a partir de cell_writes cuando LibreOffice no esta disponible."""
+    try:
+        from fpdf import FPDF  # type: ignore[import]
+
+        data = {cw.cell_reference: cw.value for cw in cell_writes}
+
+        def _currency(val) -> str:
+            try:
+                return f"${float(val):,.2f}" if val is not None else ""
+            except (TypeError, ValueError):
+                return str(val) if val else ""
+
+        def _date(val) -> str:
+            if val is None:
+                return ""
+            if hasattr(val, "strftime"):
+                return val.strftime("%d/%m/%Y")
+            return str(val)
+
+        def _txt(val) -> str:
+            return str(val).strip() if val is not None else ""
+
+        PAGE_W = 183.0  # usable width: Letter 215.9 - 2*16.5 margins
+
+        pdf = FPDF(orientation="P", unit="mm", format="Letter")
+        pdf.set_margins(16.5, 14, 16.5)
+        pdf.set_auto_page_break(auto=True, margin=14)
+        pdf.add_page()
+
+        # ── Encabezado ──
+        pdf.set_font("Helvetica", "B", 17)
+        pdf.cell(PAGE_W, 9, "Crystal Alquiler", ln=True, align="C")
+        pdf.set_font("Helvetica", "", 9)
+        pdf.cell(PAGE_W, 5, "Renta de Vajilla, Sillas, Mesas y Loza para Eventos", ln=True, align="C")
+        pdf.ln(2)
+        pdf.set_draw_color(29, 47, 88)
+        pdf.set_line_width(0.5)
+        pdf.line(16.5, pdf.get_y(), 199.4, pdf.get_y())
+        pdf.ln(4)
+
+        # ── Folio y fecha ──
+        pdf.set_font("Helvetica", "B", 12)
+        pdf.cell(PAGE_W * 0.6, 7, f"Nota de Pedido: {document_id}")
+        pdf.set_font("Helvetica", "", 9)
+        pdf.cell(PAGE_W * 0.4, 7, f"Fecha: {_date(data.get('I12'))}", ln=True, align="R")
+        pdf.ln(3)
+
+        def _section_header(title: str) -> None:
+            pdf.set_fill_color(29, 47, 88)
+            pdf.set_text_color(255, 255, 255)
+            pdf.set_font("Helvetica", "B", 8)
+            pdf.cell(PAGE_W, 6, f"  {title}", ln=True, fill=True)
+            pdf.set_text_color(0, 0, 0)
+            pdf.ln(1)
+
+        def _info_row(label: str, value: str) -> None:
+            if not value:
+                return
+            pdf.set_font("Helvetica", "B", 8)
+            pdf.cell(42, 5, f"{label}:")
+            pdf.set_font("Helvetica", "", 8)
+            pdf.cell(PAGE_W - 42, 5, value, ln=True)
+
+        # ── Datos del cliente ──
+        _section_header("DATOS DEL CLIENTE")
+        _info_row("Cliente", _txt(data.get("B9")))
+        _info_row("Direccion", _txt(data.get("B10")))
+        _info_row("Colonia", _txt(data.get("B11")))
+        _info_row("Referencia", _txt(data.get("B12")))
+        _info_row("Telefono", _txt(data.get("I10")))
+        _info_row("Fecha de nacimiento", _date(data.get("I9")))
+        pdf.ln(3)
+
+        # ── Fechas ──
+        _section_header("FECHAS DE SERVICIO")
+        _info_row("Entrega", _date(data.get("B15")))
+        _info_row("Evento", _date(data.get("B16")))
+        _info_row("Recoleccion", _date(data.get("B17")))
+        pdf.ln(3)
+
+        # ── Tabla de equipo ──
+        _section_header("EQUIPO RENTADO")
+
+        COL_QTY, COL_DESC, COL_UNIT, COL_TOTAL = 16, 107, 30, 30
+
+        pdf.set_fill_color(235, 239, 246)
+        pdf.set_font("Helvetica", "B", 8)
+        pdf.cell(COL_QTY, 6, "Cant.", border=1, fill=True, align="C")
+        pdf.cell(COL_DESC, 6, "Descripcion", border=1, fill=True)
+        pdf.cell(COL_UNIT, 6, "P. Unitario", border=1, fill=True, align="R")
+        pdf.cell(COL_TOTAL, 6, "Total", border=1, fill=True, align="R", ln=True)
+
+        pdf.set_font("Helvetica", "", 8)
+        has_items = False
+        for i in range(MAX_TEMPLATE_ITEMS):
+            row = ITEM_START_ROW + i
+            qty = data.get(f"B{row}")
+            desc = data.get(f"C{row}")
+            unit_price = data.get(f"I{row}")
+            total = data.get(f"J{row}")
+            if qty is None and not desc:
+                continue
+            has_items = True
+            fill_row = i % 2 == 1
+            if fill_row:
+                pdf.set_fill_color(249, 250, 252)
+            qty_str = str(int(float(qty))) if qty is not None else ""
+            pdf.cell(COL_QTY, 5.5, qty_str, border=1, fill=fill_row, align="C")
+            pdf.cell(COL_DESC, 5.5, _txt(desc), border=1, fill=fill_row)
+            pdf.cell(COL_UNIT, 5.5, _currency(unit_price), border=1, fill=fill_row, align="R")
+            pdf.cell(COL_TOTAL, 5.5, _currency(total), border=1, fill=fill_row, align="R", ln=True)
+
+        if not has_items:
+            pdf.set_font("Helvetica", "I", 8)
+            pdf.cell(PAGE_W, 5.5, "Sin articulos registrados.", border=1, ln=True, align="C")
+
+        pdf.ln(4)
+
+        # ── Resumen financiero ──
+        _section_header("RESUMEN FINANCIERO")
+
+        try:
+            balance = float(data.get("J46") or 0) - float(data.get("J47") or 0) - float(data.get("J48") or 0)
+        except (TypeError, ValueError):
+            balance = 0.0
+
+        fin_rows = [
+            ("Subtotal", data.get("J42")),
+            ("Flete", data.get("J43")),
+            ("IVA (16%)", data.get("J44")),
+            ("Deposito de seguridad", data.get("J45")),
+            ("Total estimado", data.get("J46")),
+            ("Descuento", data.get("J47")),
+            ("Anticipo", data.get("J48")),
+        ]
+        INDENT = PAGE_W - 95
+        pdf.set_font("Helvetica", "", 9)
+        for label, val in fin_rows:
+            if val is not None:
+                try:
+                    if float(val) == 0:
+                        continue
+                except (TypeError, ValueError):
+                    pass
+            else:
+                continue
+            pdf.cell(INDENT, 5.5, "")
+            pdf.cell(55, 5.5, f"{label}:")
+            pdf.cell(40, 5.5, _currency(val), ln=True, align="R")
+
+        pdf.set_fill_color(29, 47, 88)
+        pdf.set_text_color(255, 255, 255)
+        pdf.set_font("Helvetica", "B", 10)
+        pdf.cell(INDENT, 7, "", fill=True)
+        pdf.cell(55, 7, "Saldo por pagar:", fill=True)
+        pdf.cell(40, 7, _currency(balance), ln=True, align="R", fill=True)
+        pdf.set_text_color(0, 0, 0)
+
+        # ── Instrucciones ──
+        instructions = _txt(data.get("B43"))
+        if instructions:
+            pdf.ln(4)
+            _section_header("INSTRUCCIONES DE ENTREGA")
+            pdf.set_font("Helvetica", "", 8)
+            pdf.multi_cell(PAGE_W, 5, instructions)
+
+        # ── Footer ──
+        pdf.ln(6)
+        pdf.set_line_width(0.4)
+        pdf.line(16.5, pdf.get_y(), 199.4, pdf.get_y())
+        pdf.ln(2)
+        pdf.set_font("Helvetica", "I", 7)
+        pdf.set_text_color(130, 130, 130)
+        pdf.cell(PAGE_W, 4, "Crystal Alquiler - Documento generado electronicamente", ln=True, align="C")
+
+        pdf.output(str(pdf_path))
+        return pdf_path.exists()
+
+    except Exception:
+        return False
 
 
 # ── Cell write helpers (unchanged) ─────────────────────────────────────
