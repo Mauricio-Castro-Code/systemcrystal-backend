@@ -566,18 +566,27 @@ def _try_libreoffice_pdf(excel_path: Path, pdf_path: Path) -> bool:
     if not soffice:
         return False
 
+    # Provide a writable HOME for LibreOffice profile (needed in Docker).
+    # Force Spanish locale so date cells render in Spanish.
+    env = os.environ.copy()
+    env.setdefault("HOME", str(pdf_path.parent))
+    env.setdefault("LANG", "es_MX.UTF-8")
+    env.setdefault("LC_ALL", "es_MX.UTF-8")
+
     try:
         result = subprocess.run(
             [
                 soffice,
                 "--headless",
                 "--norestore",
+                "--nofirststartwizard",
                 "--convert-to",
                 "pdf",
                 "--outdir",
                 str(pdf_path.parent),
                 str(excel_path),
             ],
+            env=env,
             capture_output=True,
             timeout=getattr(settings, "DOCUMENT_RENDER_TIMEOUT_SECONDS", 120),
             check=False,

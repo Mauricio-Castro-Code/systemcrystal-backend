@@ -1,12 +1,18 @@
 FROM python:3.11-slim
 
-RUN apt-get update \
+RUN echo "ttf-mscorefonts-installer msttcorefonts/accepted-mscorefonts-eula select true" | debconf-set-selections \
+    && apt-get update \
     && apt-get install -y --no-install-recommends \
        libreoffice \
-       fonts-liberation \
-       fonts-crosextra-carlito \
-       fonts-crosextra-caladea \
+       ttf-mscorefonts-installer \
+       locales \
+    && echo "es_MX.UTF-8 UTF-8" >> /etc/locale.gen \
+    && locale-gen \
     && rm -rf /var/lib/apt/lists/*
+
+ENV LANG=es_MX.UTF-8
+ENV LANGUAGE=es_MX:es
+ENV LC_ALL=es_MX.UTF-8
 
 WORKDIR /app
 
