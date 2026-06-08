@@ -1,8 +1,13 @@
 FROM python:3.11-slim
 
-RUN echo "ttf-mscorefonts-installer msttcorefonts/accepted-mscorefonts-eula select true" | debconf-set-selections \
+RUN echo "deb http://deb.debian.org/debian bookworm main contrib non-free" \
+       > /etc/apt/sources.list.d/contrib.list \
+    && echo "ttf-mscorefonts-installer msttcorefonts/accepted-mscorefonts-eula select true" \
+       | debconf-set-selections \
     && apt-get update \
     && apt-get install -y --no-install-recommends \
+       wget \
+       ca-certificates \
        libreoffice \
        ttf-mscorefonts-installer \
        locales \
