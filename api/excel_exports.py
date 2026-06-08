@@ -1,0 +1,754 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import date, datetime
+from decimal import Decimal
+from pathlib import Path
+import os
+import platform
+import re
+import shutil
+import subprocess
+import tempfile
+from typing import Literal
+import warnings
+import zipfile
+
+from django.conf import settings
+from django.utils import timezone
+
+from .models import Order, Quotation
+
+
+MAX_TEMPLATE_ITEMS = 21
+ITEM_START_ROW = 21
+CELL_REFERENCE_PATTERN = re.compile(r"([A-Z]+)(\d+)$")
+DOCUMENT_PRINT_AREA = "$A$1:$K$72"
+DOCUMENT_PAGE_MARGIN_CM = 0.635
+DOCUMENT_PAGE_HEADER_MARGIN_CM = 0.423
+DOCUMENT_PAGE_FOOTER_MARGIN_CM = 0.423
+
+
+class ExcelTemplateExportError(ValueError):
+    pass
+
+
+DocumentCellKind = Literal["blank", "text", "number", "date", "formula"]
+
+
+@dataclass(frozen=True)
+class DocumentCellWrite:
+    cell_reference: str
+    kind: DocumentCellKind
+    value: str | int | float | Decimal | date | None
+
+
+@dataclass(frozen=True)
+class GeneratedDocumentBundle:
+    excel_bytes: bytes
+    excel_filename: str
+    pdf_bytes: bytes
+    pdf_filename: str
+
+
+# ── Public API (unchanged signatures) ──────────────────────────────────
+
+
+def export_quotation_excel(quotation: Quotation) -> tuple[bytes, str]:
+    document = render_quotation_documents(quotation)
+    return document.excel_bytes, document.excel_filename
+
+
+def export_quotation_pdf(quotation: Quotation) -> tuple[bytes, str]:
+    document = render_quotation_documents(quotation)
+    return document.pdf_bytes, document.pdf_filename
+
+
+def export_order_excel(order: Order) -> tuple[bytes, str]:
+    document = render_order_documents(order)
+    return document.excel_bytes, document.excel_filename
+
+
+def export_order_pdf(order: Order) -> tuple[bytes, str]:
+    document = render_order_documents(order)
+    return document.pdf_bytes, document.pdf_filename
+
+
+def render_quotation_documents(quotation: Quotation) -> GeneratedDocumentBundle:
+    return render_note_like_documents(
+        document_id=quotation.quotation_id,
+        created_at=timezone.localtime(quotation.created_at),
+        quotation=quotation,
+        template_path=settings.QUOTATION_EXCEL_TEMPLATE_PATH,
+    )
+
+
+def render_order_documents(order: Order) -> GeneratedDocumentBundle:
+    return render_note_like_documents(
+        document_id=order.order_id,
+        created_at=timezone.localtime(order.confirmed_at),
+        quotation=order.quotation,
+        template_path=settings.NOTE_EXCEL_TEMPLATE_PATH,
+    )
+
+
+# ── Core rendering pipeline ────────────────────────────────────────────
+
+
+def render_note_like_documents(
+    *,
+    document_id: str,
+    created_at: datetime,
+    quotation: Quotation,
+    template_path: Path,
+) -> GeneratedDocumentBundle:
+    normalized_template_path = Path(template_path)
+
+    if not normalized_template_path.exists():
+        raise FileNotFoundError(
+            f"No se encontro la plantilla Excel en {normalized_template_path}.",
+        )
+
+    xlsx_template_path = resolve_xlsx_template(normalized_template_path)
+
+    cell_writes = build_note_like_cell_writes(
+        document_id=document_id,
+        created_at=created_at,
+        quotation=quotation,
+    )
+
+    return render_document_bundle(
+        template_path=xlsx_template_path,
+        output_stem=document_id,
+        cell_writes=cell_writes,
+    )
+
+
+def build_note_like_cell_writes(
+    *,
+    document_id: str,
+    created_at: datetime,
+    quotation: Quotation,
+) -> list[DocumentCellWrite]:
+    equipment_items = list(quotation.equipment_items.all())
+
+    if len(equipment_items) > MAX_TEMPLATE_ITEMS:
+        raise ExcelTemplateExportError(
+            "La plantilla solo soporta hasta 21 renglones de equipo.",
+        )
+
+    writes: list[DocumentCellWrite] = [
+        text_cell("B9", quotation.client_name),
+        text_cell("B10", quotation.address),
+        text_cell("B11", quotation.neighborhood),
+        text_cell("B12", quotation.reference),
+        date_cell("I9", quotation.birth_date),
+        text_cell("I10", quotation.phone_number),
+        date_cell("I12", created_at.date()),
+        text_cell("I15", document_id),
+        date_cell("B15", quotation.delivery_date),
+        date_cell("B16", quotation.event_date),
+        date_cell("B17", quotation.collection_date),
+        text_cell("B43", quotation.delivery_instructions),
+        number_cell("J42", quotation.subtotal),
+        number_cell("J43", quotation.freight),
+        number_cell("J44", quotation.tax_amount),
+        number_cell("J45", quotation.security_deposit),
+        number_cell("J46", quotation.total_estimated),
+        number_cell("J47", quotation.discount),
+        number_cell("J48", quotation.advance_payment),
+        formula_cell("J49", "=J46-J47-J48"),
+    ]
+
+    for row_index in range(MAX_TEMPLATE_ITEMS):
+        row_number = ITEM_START_ROW + row_index
+        item = equipment_items[row_index] if row_index < len(equipment_items) else None
+
+        writes.extend(
+            [
+                number_cell(f"B{row_number}", item.quantity if item else None),
+                text_cell(f"C{row_number}", item.equipment if item else None),
+                number_cell(f"I{row_number}", item.unit_price if item else None),
+                number_cell(f"J{row_number}", item.total if item else None),
+            ],
+        )
+
+    return writes
+
+
+# ── Template format detection & conversion ────────────────────────────
+
+
+def _is_legacy_xls(path: Path) -> bool:
+    """Return True if the file is old binary .xls format (not a ZIP-based .xlsx)."""
+    try:
+        with zipfile.ZipFile(path):
+            return False
+    except (zipfile.BadZipFile, Exception):
+        return True
+
+
+def _convert_xls_to_xlsx(xls_path: Path) -> Path:
+    """
+    Convert a legacy .xls template to .xlsx using LibreOffice.
+    The converted file is placed next to the original with a .xlsx suffix.
+    Raises ExcelTemplateExportError if conversion fails.
+    """
+    soffice = _resolve_soffice_binary()
+
+    if not soffice:
+        raise ExcelTemplateExportError(
+            "La plantilla esta en formato .xls antiguo y no hay LibreOffice disponible "
+            "para convertirla. Abre el archivo en Excel y guardalo como .xlsx."
+        )
+
+    out_dir = xls_path.parent
+    stem = xls_path.stem
+
+    try:
+        result = subprocess.run(
+            [
+                soffice,
+                "--headless",
+                "--norestore",
+                "--convert-to",
+                "xlsx",
+                "--outdir",
+                str(out_dir),
+                str(xls_path),
+            ],
+            capture_output=True,
+            timeout=60,
+            check=False,
+        )
+    except (FileNotFoundError, OSError, subprocess.TimeoutExpired) as exc:
+        raise ExcelTemplateExportError(
+            f"Error al convertir la plantilla con LibreOffice: {exc}"
+        ) from exc
+
+    if result.returncode != 0:
+        raise ExcelTemplateExportError(
+            "LibreOffice no pudo convertir la plantilla al formato .xlsx."
+        )
+
+    converted = out_dir / f"{stem}.xlsx"
+
+    if not converted.exists():
+        raise ExcelTemplateExportError(
+            "LibreOffice termino pero no genero el archivo .xlsx esperado."
+        )
+
+    return converted
+
+
+def resolve_xlsx_template(template_path: Path) -> Path:
+    """
+    Return a valid .xlsx path for the given template.
+    If the template is already proper .xlsx, return it as-is.
+    If it is a legacy .xls binary file, convert it and return the converted path.
+    """
+    if not _is_legacy_xls(template_path):
+        return template_path
+
+    # Look for an already-converted sibling first.
+    converted = template_path.with_suffix(".xlsx")
+    if converted != template_path and converted.exists():
+        # Use the converted copy if it is newer than the source.
+        if converted.stat().st_mtime >= template_path.stat().st_mtime:
+            return converted
+
+    return _convert_xls_to_xlsx(template_path)
+
+
+# ── openpyxl-based rendering ───────────────────────────────────────────
+
+
+def render_document_bundle(
+    *,
+    template_path: Path,
+    output_stem: str,
+    cell_writes: list[DocumentCellWrite],
+) -> GeneratedDocumentBundle:
+    from openpyxl import load_workbook
+    from openpyxl.worksheet.page import PageMargins, PrintPageSetup
+
+    with tempfile.TemporaryDirectory(prefix="crystal-documents-") as tmp:
+        tmp_path = Path(tmp)
+        excel_output_path = tmp_path / f"{output_stem}.xlsx"
+        pdf_output_path = tmp_path / f"{output_stem}.pdf"
+
+        # openpyxl emite warnings ruidosos por imagenes WMF de la plantilla.
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            wb = load_workbook(str(template_path))
+        ws = wb.worksheets[0]
+
+        _apply_page_setup(ws)
+        _apply_cell_writes(ws, cell_writes)
+
+        wb.save(str(excel_output_path))
+        wb.close()
+
+        if not excel_output_path.exists():
+            raise ExcelTemplateExportError(
+                "openpyxl no genero el archivo Excel esperado.",
+            )
+
+        # openpyxl descarta imagenes WMF (logos, iconos) al guardar.
+        # Las copiamos a nivel ZIP desde la plantilla original.
+        _restore_xlsx_media(template_path, excel_output_path)
+
+        _generate_pdf(excel_output_path, pdf_output_path)
+
+        if not pdf_output_path.exists():
+            raise ExcelTemplateExportError(
+                "No fue posible generar la vista PDF del documento.",
+            )
+
+        return GeneratedDocumentBundle(
+            excel_bytes=excel_output_path.read_bytes(),
+            excel_filename=excel_output_path.name,
+            pdf_bytes=pdf_output_path.read_bytes(),
+            pdf_filename=pdf_output_path.name,
+        )
+
+
+def _apply_page_setup(ws) -> None:
+    ws.print_area = DOCUMENT_PRINT_AREA
+    ws.sheet_properties.pageSetUpPr.fitToPage = True
+
+    ws.page_setup.orientation = "portrait"
+    ws.page_setup.paperSize = 1  # Letter
+    ws.page_setup.fitToWidth = 1
+    ws.page_setup.fitToHeight = 1
+
+    ws.page_margins = ws.page_margins or type(ws.page_margins)()
+    ws.page_margins.left = DOCUMENT_PAGE_MARGIN_CM
+    ws.page_margins.right = DOCUMENT_PAGE_MARGIN_CM
+    ws.page_margins.top = DOCUMENT_PAGE_MARGIN_CM
+    ws.page_margins.bottom = DOCUMENT_PAGE_MARGIN_CM
+    ws.page_margins.header = DOCUMENT_PAGE_HEADER_MARGIN_CM
+    ws.page_margins.footer = DOCUMENT_PAGE_FOOTER_MARGIN_CM
+
+    ws.print_options.horizontalCentered = True
+    ws.print_options.verticalCentered = False
+
+
+def _apply_cell_writes(ws, cell_writes: list[DocumentCellWrite]) -> None:
+    from openpyxl.styles import PatternFill
+
+    # LibreOffice renderiza GRIS las celdas escritas por openpyxl que no
+    # tienen fill explicito. Forzamos fondo blanco en cada escritura.
+    blanco = PatternFill(fill_type="solid", fgColor="FFFFFFFF")
+
+    for cw in cell_writes:
+        cell = ws[cw.cell_reference]
+
+        if cw.kind == "blank":
+            cell.value = None
+        elif cw.kind == "text":
+            cell.value = str(cw.value or "")
+        elif cw.kind == "number":
+            cell.value = _to_float(cw.value)
+        elif cw.kind == "date":
+            cell.value = cw.value
+        elif cw.kind == "formula":
+            cell.value = str(cw.value or "")
+
+        if cw.kind != "blank":
+            existing_fill = cell.fill
+            fill_type = getattr(existing_fill, "fill_type", None)
+            if fill_type in (None, "none"):
+                cell.fill = blanco
+
+
+# Carpetas del .xlsx que openpyxl NO entiende y descarta silenciosamente al
+# guardar. Las copiamos enteras desde la plantilla original al output para
+# que el archivo final conserve logos WMF/EMF, drawings, textboxes con
+# clausulas, pagares OLE, charts, vmlDrawings, etc.
+#
+# Si el comando `python manage.py diagnose_excel_template` reporta otra
+# carpeta, agregala aqui.
+_TEMPLATE_PRESERVED_PREFIXES = (
+    "xl/media/",            # imagenes (WMF, EMF, PNG, JPEG)
+    "xl/drawings/",         # shapes, textboxes, anclas de imagenes
+    "xl/embeddings/",       # objetos OLE (pagare, contratos PDF)
+    "xl/charts/",           # graficos
+    "xl/printerSettings/",  # config de impresora
+    "xl/theme/",            # tema custom corporativo
+    "xl/worksheets/_rels/", # relaciones hoja->drawings/oleObjects
+    "xl/_rels/",            # relaciones del workbook
+)
+
+
+_SHEET_DATA_PATTERN = re.compile(
+    r"<sheetData(?:\s[^>]*)?(?:/>|>.*?</sheetData>)",
+    re.DOTALL,
+)
+
+
+def _restore_xlsx_media(template_path: Path, output_path: Path) -> None:
+    """
+    Reconstruye el .xlsx final usando el TEMPLATE como base y trasplantando
+    del output de openpyxl solo lo estrictamente necesario:
+      - <sheetData> de cada hoja  (las celdas con valores nuevos)
+      - xl/sharedStrings.xml      (textos referenciados por celdas)
+      - xl/calcChain.xml          (cache de formulas)
+
+    Por que asi en lugar de "patchear" lo que openpyxl rompe:
+      openpyxl no solo descarta archivos (WMF, oleObjects, embeddings); a
+      veces preserva el archivo binario PERO elimina del XML de la hoja la
+      referencia que lo apunta (<drawing r:id="..."/>, <legacyDrawing/>,
+      <oleObjects>, etc.). El resultado: el ZIP tiene la imagen pero la
+      hoja ya no la usa, y LibreOffice no la dibuja.
+
+      Tomando el sheet XML del template y solo trasplantando el bloque
+      <sheetData>, openpyxl deja de tener oportunidad de tocar las
+      referencias visuales.
+    """
+    try:
+        with zipfile.ZipFile(template_path, "r") as zin:
+            template_data: dict[str, bytes] = {
+                name: zin.read(name) for name in zin.namelist()
+            }
+        with zipfile.ZipFile(output_path, "r") as zout:
+            output_data: dict[str, bytes] = {
+                name: zout.read(name) for name in zout.namelist()
+            }
+    except zipfile.BadZipFile:
+        return
+
+    if not template_data:
+        return
+
+    # Arrancamos con TODO el template
+    final_data: dict[str, bytes] = dict(template_data)
+
+    # Trasplantar shared strings y calcChain del output (datos nuevos).
+    for name in ("xl/sharedStrings.xml", "xl/calcChain.xml"):
+        if name in output_data:
+            final_data[name] = output_data[name]
+
+    # En cada hoja, trasplantar solo el bloque <sheetData> del output.
+    for name, output_sheet in output_data.items():
+        if not (
+            name.startswith("xl/worksheets/sheet") and name.endswith(".xml")
+        ):
+            continue
+        if name not in template_data:
+            final_data[name] = output_sheet
+            continue
+        final_data[name] = _transplant_sheet_data(
+            template_data[name], output_sheet,
+        )
+
+    # Si openpyxl creo archivos nuevos no presentes en el template, agregarlos.
+    for name, data in output_data.items():
+        if name not in final_data:
+            final_data[name] = data
+
+    tmp_path = output_path.with_suffix(output_path.suffix + ".tmp")
+    try:
+        with zipfile.ZipFile(tmp_path, "w", zipfile.ZIP_DEFLATED) as zfinal:
+            for name, data in final_data.items():
+                zfinal.writestr(name, data)
+        os.replace(tmp_path, output_path)
+    except Exception:
+        if tmp_path.exists():
+            tmp_path.unlink(missing_ok=True)
+        raise
+
+
+def _transplant_sheet_data(
+    template_sheet_bytes: bytes,
+    output_sheet_bytes: bytes,
+) -> bytes:
+    """
+    Reemplaza el bloque <sheetData>...</sheetData> del sheet XML del template
+    por el del output (que trae las celdas llenas). Todo lo demas del sheet
+    -drawings, oleObjects, mergeCells, hyperlinks, page setup, etc.- se queda
+    como estaba en el template.
+    """
+    try:
+        template_text = template_sheet_bytes.decode("utf-8")
+        output_text = output_sheet_bytes.decode("utf-8")
+    except UnicodeDecodeError:
+        return output_sheet_bytes
+
+    output_match = _SHEET_DATA_PATTERN.search(output_text)
+    template_match = _SHEET_DATA_PATTERN.search(template_text)
+
+    if not output_match or not template_match:
+        return output_sheet_bytes
+
+    new_sheet_data = output_match.group(0)
+    merged_text = (
+        template_text[: template_match.start()]
+        + new_sheet_data
+        + template_text[template_match.end():]
+    )
+    return merged_text.encode("utf-8")
+
+
+def _to_float(value) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, Decimal):
+        return float(value)
+    if isinstance(value, (int, float)):
+        return float(value)
+    return float(Decimal(str(value)))
+
+
+# ── LibreOffice binary discovery ───────────────────────────────────────
+
+
+_LIBREOFFICE_KNOWN_PATHS = (
+    "/Applications/LibreOffice.app/Contents/MacOS/soffice",
+    "/usr/bin/soffice",
+    "/usr/local/bin/soffice",
+    "/opt/homebrew/bin/soffice",
+)
+
+
+def _resolve_soffice_binary() -> str | None:
+    """
+    Busca el binario de LibreOffice en este orden:
+      1. settings.LIBREOFFICE_BINARY o env LIBREOFFICE_BINARY
+      2. PATH (soffice / libreoffice)
+      3. Rutas conocidas de macOS y Linux
+    """
+    configured = (
+        getattr(settings, "LIBREOFFICE_BINARY", "")
+        or os.getenv("LIBREOFFICE_BINARY", "")
+    ).strip()
+    if configured and Path(configured).exists():
+        return configured
+
+    in_path = shutil.which("soffice") or shutil.which("libreoffice")
+    if in_path:
+        return in_path
+
+    for candidate in _LIBREOFFICE_KNOWN_PATHS:
+        if Path(candidate).exists():
+            return candidate
+
+    return None
+
+
+# ── PDF generation (LibreOffice → native Excel fallback) ───────────────
+
+
+def _generate_pdf(excel_path: Path, pdf_path: Path) -> None:
+    if _try_libreoffice_pdf(excel_path, pdf_path):
+        return
+
+    if _try_native_excel_pdf(excel_path, pdf_path):
+        return
+
+    raise ExcelTemplateExportError(
+        "No se encontro LibreOffice ni Microsoft Excel para generar PDF. "
+        "Instala LibreOffice (soffice) o Microsoft Excel.",
+    )
+
+
+def _try_libreoffice_pdf(excel_path: Path, pdf_path: Path) -> bool:
+    soffice = _resolve_soffice_binary()
+    if not soffice:
+        return False
+
+    try:
+        result = subprocess.run(
+            [
+                soffice,
+                "--headless",
+                "--norestore",
+                "--convert-to",
+                "pdf",
+                "--outdir",
+                str(pdf_path.parent),
+                str(excel_path),
+            ],
+            capture_output=True,
+            timeout=getattr(settings, "DOCUMENT_RENDER_TIMEOUT_SECONDS", 120),
+            check=False,
+        )
+    except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
+        return False
+
+    if result.returncode != 0:
+        return False
+
+    generated = pdf_path.parent / f"{excel_path.stem}.pdf"
+    if generated.exists() and generated != pdf_path:
+        generated.rename(pdf_path)
+
+    return pdf_path.exists()
+
+
+def _try_native_excel_pdf(excel_path: Path, pdf_path: Path) -> bool:
+    system_name = platform.system()
+    timeout = getattr(settings, "DOCUMENT_RENDER_TIMEOUT_SECONDS", 120)
+
+    if system_name == "Darwin":
+        return _try_macos_excel_pdf(excel_path, pdf_path, timeout)
+
+    if system_name == "Windows":
+        return _try_windows_excel_pdf(excel_path, pdf_path, timeout)
+
+    return False
+
+
+def _try_macos_excel_pdf(
+    excel_path: Path,
+    pdf_path: Path,
+    timeout: int,
+) -> bool:
+    script = "\n".join([
+        'tell application "Microsoft Excel"',
+        "set display alerts to false",
+        f'open POSIX file "{excel_path}"',
+        "set wb to active workbook",
+        f'save workbook as wb filename "{pdf_path}" file format PDF file format',
+        "close wb saving no",
+        "end tell",
+    ])
+
+    try:
+        result = subprocess.run(
+            ["osascript", "-"],
+            input=script,
+            text=True,
+            capture_output=True,
+            timeout=timeout,
+            check=False,
+        )
+        return result.returncode == 0 and pdf_path.exists()
+    except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def _try_windows_excel_pdf(
+    excel_path: Path,
+    pdf_path: Path,
+    timeout: int,
+) -> bool:
+    ps_script = "\n".join([
+        "$ErrorActionPreference = 'Stop'",
+        "$excel = $null",
+        "$wb = $null",
+        "try {",
+        "  $excel = New-Object -ComObject Excel.Application",
+        "  $excel.Visible = $false",
+        "  $excel.DisplayAlerts = $false",
+        f"  $wb = $excel.Workbooks.Open('{excel_path}')",
+        f"  $wb.ExportAsFixedFormat(0, '{pdf_path}')",
+        "  $wb.Close($false)",
+        "} finally {",
+        "  if ($wb) { [void][System.Runtime.InteropServices.Marshal]::ReleaseComObject($wb) }",
+        "  if ($excel) { $excel.Quit(); [void][System.Runtime.InteropServices.Marshal]::ReleaseComObject($excel) }",
+        "  [GC]::Collect()",
+        "}",
+    ])
+
+    with tempfile.NamedTemporaryFile(
+        mode="w", encoding="utf-8", suffix=".ps1", delete=False,
+    ) as f:
+        f.write(ps_script)
+        ps_path = Path(f.name)
+
+    try:
+        result = subprocess.run(
+            [
+                "powershell.exe", "-NoProfile", "-NonInteractive",
+                "-ExecutionPolicy", "Bypass", "-File", str(ps_path),
+            ],
+            capture_output=True,
+            timeout=timeout,
+            check=False,
+        )
+        return result.returncode == 0 and pdf_path.exists()
+    except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
+        return False
+    finally:
+        ps_path.unlink(missing_ok=True)
+
+
+# ── Cell write helpers (unchanged) ─────────────────────────────────────
+
+
+def text_cell(cell_reference: str, value) -> DocumentCellWrite:
+    normalized_reference = validate_cell_reference(cell_reference)
+    normalized_text = normalize_document_text(value)
+
+    if not normalized_text:
+        return blank_cell(normalized_reference)
+
+    return DocumentCellWrite(normalized_reference, "text", normalized_text)
+
+
+def number_cell(cell_reference: str, value) -> DocumentCellWrite:
+    normalized_reference = validate_cell_reference(cell_reference)
+
+    if value is None or value == "":
+        return blank_cell(normalized_reference)
+
+    if isinstance(value, Decimal):
+        return DocumentCellWrite(normalized_reference, "number", value)
+
+    if isinstance(value, int | float):
+        return DocumentCellWrite(normalized_reference, "number", value)
+
+    try:
+        return DocumentCellWrite(normalized_reference, "number", Decimal(str(value)))
+    except Exception as error:  # noqa: BLE001
+        raise ExcelTemplateExportError(
+            f"La celda {cell_reference} requiere un numero valido.",
+        ) from error
+
+
+def date_cell(cell_reference: str, value) -> DocumentCellWrite:
+    normalized_reference = validate_cell_reference(cell_reference)
+
+    if value in {None, ""}:
+        return blank_cell(normalized_reference)
+
+    if isinstance(value, datetime):
+        return DocumentCellWrite(normalized_reference, "date", value.date())
+
+    if isinstance(value, date):
+        return DocumentCellWrite(normalized_reference, "date", value)
+
+    raise ExcelTemplateExportError(
+        f"La celda {cell_reference} requiere una fecha valida.",
+    )
+
+
+def formula_cell(cell_reference: str, value: str) -> DocumentCellWrite:
+    normalized_reference = validate_cell_reference(cell_reference)
+    normalized_formula = str(value or "").strip()
+
+    if not normalized_formula:
+        return blank_cell(normalized_reference)
+
+    return DocumentCellWrite(normalized_reference, "formula", normalized_formula)
+
+
+def blank_cell(cell_reference: str) -> DocumentCellWrite:
+    return DocumentCellWrite(validate_cell_reference(cell_reference), "blank", None)
+
+
+def validate_cell_reference(cell_reference: str) -> str:
+    normalized_reference = str(cell_reference or "").strip().upper()
+
+    if not CELL_REFERENCE_PATTERN.fullmatch(normalized_reference):
+        raise ExcelTemplateExportError(
+            f"La referencia de celda {cell_reference!r} no es valida.",
+        )
+
+    return normalized_reference
+
+
+def normalize_document_text(value) -> str:
+    normalized_text = str(value or "").strip()
+    return normalized_text.upper()
