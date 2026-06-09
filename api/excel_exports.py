@@ -244,20 +244,117 @@ def _convert_xls_to_xlsx(xls_path: Path) -> Path:
 def resolve_xlsx_template(template_path: Path) -> Path:
     """
     Return a valid .xlsx path for the given template.
-    If the template is already proper .xlsx, return it as-is.
-    If it is a legacy .xls binary file, convert it and return the converted path.
+    - Converts legacy .xls to .xlsx if needed.
+    - On Linux, converts EMF images to PNG so LibreOffice renders them correctly
+      (EMF is a Windows-only format that LibreOffice Linux does not render).
     """
-    if not _is_legacy_xls(template_path):
-        return template_path
+    if _is_legacy_xls(template_path):
+        converted = template_path.with_suffix(".xlsx")
+        if converted != template_path and converted.exists():
+            if converted.stat().st_mtime >= template_path.stat().st_mtime:
+                template_path = converted
+            else:
+                template_path = _convert_xls_to_xlsx(template_path)
+        else:
+            template_path = _convert_xls_to_xlsx(template_path)
 
-    # Look for an already-converted sibling first.
-    converted = template_path.with_suffix(".xlsx")
-    if converted != template_path and converted.exists():
-        # Use the converted copy if it is newer than the source.
-        if converted.stat().st_mtime >= template_path.stat().st_mtime:
-            return converted
+    if platform.system() == "Linux":
+        template_path = _ensure_emf_converted_to_png(template_path)
 
-    return _convert_xls_to_xlsx(template_path)
+    return template_path
+
+
+def _ensure_emf_converted_to_png(xlsx_path: Path) -> Path:
+    """
+    Return a version of xlsx_path where all EMF media files have been replaced
+    by PNG equivalents. The result is cached as a sibling file ending in
+    '_linux.xlsx' and is regenerated only when the source template is newer.
+    EMF is a Windows metafile format; LibreOffice on Linux silently drops it.
+    """
+    linux_path = xlsx_path.with_name(xlsx_path.stem + "_linux.xlsx")
+
+    if linux_path.exists() and linux_path.stat().st_mtime >= xlsx_path.stat().st_mtime:
+        return linux_path
+
+    soffice = _resolve_soffice_binary()
+
+    try:
+        with zipfile.ZipFile(xlsx_path, "r") as zin:
+            names = zin.namelist()
+            emf_names = [n for n in names if n.startswith("xl/media/") and n.lower().endswith(".emf")]
+
+        if not emf_names:
+            return xlsx_path
+
+        with tempfile.TemporaryDirectory(prefix="crystal-emf-") as tmp:
+            tmp_path = Path(tmp)
+            png_map: dict[str, bytes] = {}
+
+            for emf_name in emf_names:
+                with zipfile.ZipFile(xlsx_path, "r") as zin:
+                    emf_bytes = zin.read(emf_name)
+
+                emf_file = tmp_path / Path(emf_name).name
+                emf_file.write_bytes(emf_bytes)
+
+                if soffice:
+                    env = os.environ.copy()
+                    env["HOME"] = tmp
+                    subprocess.run(
+                        [soffice, "--headless", "--norestore", "--nofirststartwizard",
+                         "--convert-to", "png", "--outdir", tmp, str(emf_file)],
+                        env=env, capture_output=True, timeout=60, check=False,
+                    )
+                    png_file = tmp_path / (emf_file.stem + ".png")
+                    if png_file.exists():
+                        png_map[emf_name] = png_file.read_bytes()
+
+            if not png_map:
+                return xlsx_path
+
+            # Build updated xlsx replacing EMF entries with PNG.
+            with zipfile.ZipFile(xlsx_path, "r") as zin:
+                all_data = {n: zin.read(n) for n in zin.namelist()}
+
+            # Replace media files and update drawing relationship files.
+            for emf_name, png_bytes in png_map.items():
+                png_name = emf_name[:-4] + ".png"
+                all_data.pop(emf_name, None)
+                all_data[png_name] = png_bytes
+
+                stem = Path(emf_name).stem
+                png_stem = stem  # same stem, different ext
+
+                # Update drawing rels: Target="../media/imageN.emf" → imageN.png
+                for rel_name in list(all_data.keys()):
+                    if "drawings/_rels/" in rel_name and rel_name.endswith(".rels"):
+                        text = all_data[rel_name].decode("utf-8")
+                        text = text.replace(f"{stem}.emf", f"{png_stem}.png")
+                        all_data[rel_name] = text.encode("utf-8")
+
+            # Update [Content_Types].xml: add PNG default if missing.
+            ct_key = "[Content_Types].xml"
+            if ct_key in all_data:
+                ct = all_data[ct_key].decode("utf-8")
+                if 'Extension="png"' not in ct:
+                    ct = ct.replace(
+                        "</Types>",
+                        '<Default Extension="png" ContentType="image/png"/></Types>',
+                    )
+                    all_data[ct_key] = ct.encode("utf-8")
+
+            tmp_out = tmp_path / linux_path.name
+            with zipfile.ZipFile(tmp_out, "w", zipfile.ZIP_DEFLATED) as zout:
+                for name, data in all_data.items():
+                    zout.writestr(name, data)
+
+            import shutil as _shutil
+            _shutil.move(str(tmp_out), str(linux_path))
+
+    except Exception:
+        return xlsx_path
+
+    return linux_path
 
 
 # ── openpyxl-based rendering ───────────────────────────────────────────
