@@ -427,7 +427,8 @@ def _restore_xlsx_media(template_path: Path, output_path: Path) -> None:
         if name in output_data:
             final_data[name] = output_data[name]
 
-    # En cada hoja, trasplantar solo el bloque <sheetData> del output.
+    # En cada hoja, trasplantar solo el bloque <sheetData> del output
+    # y parchear pageSetup para que LibreOffice respete fit-to-one-page.
     for name, output_sheet in output_data.items():
         if not (
             name.startswith("xl/worksheets/sheet") and name.endswith(".xml")
@@ -436,9 +437,8 @@ def _restore_xlsx_media(template_path: Path, output_path: Path) -> None:
         if name not in template_data:
             final_data[name] = output_sheet
             continue
-        final_data[name] = _transplant_sheet_data(
-            template_data[name], output_sheet,
-        )
+        merged = _transplant_sheet_data(template_data[name], output_sheet)
+        final_data[name] = _patch_page_setup(merged)
 
     # Si openpyxl creo archivos nuevos no presentes en el template, agregarlos.
     for name, data in output_data.items():
@@ -455,6 +455,35 @@ def _restore_xlsx_media(template_path: Path, output_path: Path) -> None:
         if tmp_path.exists():
             tmp_path.unlink(missing_ok=True)
         raise
+
+
+_PAGE_SETUP_PATTERN = re.compile(r"<pageSetup\b[^/]*/?>")
+
+
+def _patch_page_setup(sheet_bytes: bytes) -> bytes:
+    """
+    Ensure the sheet XML has explicit fitToWidth=1 fitToHeight=1 and
+    paperSize=1 (Letter) so LibreOffice on Linux scales to one page.
+    Excel infers these from fitToPage=1 alone; LibreOffice does not.
+    """
+    try:
+        text = sheet_bytes.decode("utf-8")
+    except UnicodeDecodeError:
+        return sheet_bytes
+
+    replacement = (
+        '<pageSetup paperSize="1" orientation="portrait" '
+        'fitToWidth="1" fitToHeight="1" '
+        'horizontalDpi="300" verticalDpi="300"/>'
+    )
+
+    if _PAGE_SETUP_PATTERN.search(text):
+        text = _PAGE_SETUP_PATTERN.sub(replacement, text, count=1)
+    else:
+        # Insert before </worksheet> if no pageSetup tag exists.
+        text = text.replace("</worksheet>", replacement + "</worksheet>", 1)
+
+    return text.encode("utf-8")
 
 
 def _transplant_sheet_data(
