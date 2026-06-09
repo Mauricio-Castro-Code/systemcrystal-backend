@@ -13,7 +13,8 @@ RUN echo "deb http://deb.debian.org/debian bookworm main contrib non-free" \
        locales \
     && echo "es_MX.UTF-8 UTF-8" >> /etc/locale.gen \
     && locale-gen \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && fc-cache -fv
 
 ENV LANG=es_MX.UTF-8
 ENV LANGUAGE=es_MX:es
@@ -27,5 +28,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 RUN python manage.py collectstatic --noinput || true
+
+# Pre-initialize LibreOffice user profile so the first real request is not slow.
+RUN HOME=/tmp soffice --headless --norestore --nofirststartwizard --version || true
 
 CMD ["gunicorn", "config.wsgi:application", "--config", "gunicorn.conf.py"]
