@@ -1,16 +1,20 @@
 FROM python:3.11-slim
 
+# Enable contrib (for ttf-mscorefonts) and backports (for newer LibreOffice)
 RUN echo "deb http://deb.debian.org/debian bookworm main contrib non-free" \
        > /etc/apt/sources.list.d/contrib.list \
+    && echo "deb http://deb.debian.org/debian bookworm-backports main" \
+       > /etc/apt/sources.list.d/backports.list \
     && echo "ttf-mscorefonts-installer msttcorefonts/accepted-mscorefonts-eula select true" \
        | debconf-set-selections \
     && apt-get update \
     && apt-get install -y --no-install-recommends \
        wget \
        ca-certificates \
-       libreoffice \
        ttf-mscorefonts-installer \
        locales \
+    && apt-get install -t bookworm-backports -y --no-install-recommends \
+       libreoffice \
     && echo "es_MX.UTF-8 UTF-8" >> /etc/locale.gen \
     && locale-gen \
     && rm -rf /var/lib/apt/lists/* \
