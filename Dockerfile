@@ -1,4 +1,4 @@
-FROM python:3.11-slim
+FROM python:3.11-slim-bookworm
 
 # Enable contrib (for ttf-mscorefonts) and backports (for newer LibreOffice)
 RUN echo "deb http://deb.debian.org/debian bookworm main contrib non-free" \
