@@ -458,22 +458,35 @@ def _restore_xlsx_media(template_path: Path, output_path: Path) -> None:
 
 
 _PAGE_SETUP_PATTERN = re.compile(r"<pageSetup\b[^/]*/?>")
+_PAGE_SETUP_PR_PATTERN = re.compile(r"<pageSetUpPr\b[^>]*/?>")
+
+# Escala fija (porcentaje) que ajusta el area de impresion A1:K72 a una sola
+# pagina Letter. Medida empiricamente con LibreOffice: 87% es la escala mas
+# grande que todavia cabe en una pagina. Usar una escala EXPLICITA (en vez de
+# fitToWidth/fitToHeight) garantiza que el PDF se vea identico en cualquier
+# version de LibreOffice -macOS local y Linux en el servidor-, porque no
+# depende del calculo de "ajustar a pagina" que cada version hace distinto.
+_FIXED_PAGE_SCALE = 87
 
 
 def _patch_page_setup(sheet_bytes: bytes) -> bytes:
     """
-    Ensure the sheet XML has explicit fitToWidth=1 fitToHeight=1 and
-    paperSize=1 (Letter) so LibreOffice on Linux scales to one page.
-    Excel infers these from fitToPage=1 alone; LibreOffice does not.
+    Fija una escala explicita (paperSize Letter + scale=87) y elimina
+    fitToPage del pageSetUpPr. Con fitToPage activo LibreOffice ignora el
+    atributo scale y recalcula el ajuste, lo que produce tamanos de fuente
+    distintos entre macOS y Linux. Con scale explicito el render es identico.
     """
     try:
         text = sheet_bytes.decode("utf-8")
     except UnicodeDecodeError:
         return sheet_bytes
 
+    # Quitar fitToPage del pageSetUpPr para que el scale explicito tenga efecto.
+    text = _PAGE_SETUP_PR_PATTERN.sub("", text)
+
     replacement = (
         '<pageSetup paperSize="1" orientation="portrait" '
-        'fitToWidth="1" fitToHeight="1" '
+        f'scale="{_FIXED_PAGE_SCALE}" '
         'horizontalDpi="300" verticalDpi="300"/>'
     )
 
