@@ -482,6 +482,7 @@ def _patch_page_setup(sheet_bytes: bytes) -> bytes:
         return sheet_bytes
 
     # Quitar fitToPage del pageSetUpPr para que el scale explicito tenga efecto.
+    had_fittopage = _PAGE_SETUP_PR_PATTERN.search(text)
     text = _PAGE_SETUP_PR_PATTERN.sub("", text)
 
     replacement = (
@@ -495,6 +496,9 @@ def _patch_page_setup(sheet_bytes: bytes) -> bytes:
     else:
         # Insert before </worksheet> if no pageSetup tag exists.
         text = text.replace("</worksheet>", replacement + "</worksheet>", 1)
+
+    import sys
+    print(f"[PDF PATCH] fitToPage removed: {bool(had_fittopage)}, scale={_FIXED_PAGE_SCALE}%", file=sys.stderr)
 
     return text.encode("utf-8")
 
