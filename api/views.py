@@ -640,6 +640,35 @@ class OrderStatusUpdateView(APIView):
         return Response(build_order_record(refreshed_order))
 
 
+class OrderBulkStatusUpdateView(APIView):
+    def post(self, request):
+        order_ids = request.data.get("orderIds", [])
+        if not isinstance(order_ids, list) or not order_ids:
+            raise ValidationError("orderIds debe ser una lista no vacía.")
+
+        serializer = OrderStatusUpdateSerializer(data={
+            "operationalStatus": request.data.get("operationalStatus"),
+            "billingStatus": request.data.get("billingStatus"),
+            "comment": request.data.get("comment", ""),
+        })
+        serializer.is_valid(raise_exception=True)
+
+        orders = get_order_base_queryset().filter(order_id__in=order_ids)
+        if not orders.exists():
+            raise NotFound("No se encontraron órdenes con los IDs proporcionados.")
+
+        for order in orders:
+            update_order_statuses(
+                order,
+                operational_status=serializer.validated_data.get("operationalStatus"),
+                billing_status=serializer.validated_data.get("billingStatus"),
+                changed_by=request.user,
+                comment=serializer.validated_data.get("comment", ""),
+            )
+
+        return Response({"success": True, "updated_count": orders.count()})
+
+
 class DashboardOverviewView(APIView):
     def get(self, request):
         orders = (
