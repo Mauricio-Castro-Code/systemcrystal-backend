@@ -35,7 +35,15 @@ from .excel_exports import (
     export_quotation_excel,
     export_quotation_pdf,
 )
-from .models import Client, FreightZone, InventoryProduct, Order, Quotation, QuotationItem
+from .models import (
+    Client,
+    FreightZone,
+    InventoryProduct,
+    Order,
+    Quotation,
+    QuotationItem,
+    order_folio_options,
+)
 from .presenters import (
     build_dashboard_overview,
     build_order_record,
@@ -87,6 +95,11 @@ def get_order_base_queryset():
 
 def request_folder_key(request):
     return (request.query_params.get("folder") or "").strip().lower()
+
+
+def request_folio_strategy(request):
+    value = str(request.data.get("folioStrategy") or "").strip().lower()
+    return "sequential" if value == "sequential" else "fill"
 
 
 def filter_orders_by_folder(order_list, folder_key: str):
@@ -477,12 +490,21 @@ class QuotationConfirmView(APIView):
             quotation_id=quotation_id,
             status=Quotation.Status.DRAFT,
         )
-        order = confirm_quotation_as_order(quotation, changed_by=request.user)
+        order = confirm_quotation_as_order(
+            quotation,
+            changed_by=request.user,
+            folio_strategy=request_folio_strategy(request),
+        )
 
         return Response(
             build_order_record(order),
             status=status.HTTP_201_CREATED,
         )
+
+
+class OrderFolioOptionsView(APIView):
+    def get(self, request):
+        return Response(order_folio_options())
 
 
 class OrderListCreateView(APIView):
@@ -493,7 +515,11 @@ class OrderListCreateView(APIView):
     def post(self, request):
         serializer = QuotationNoteSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        order = create_order_from_note(serializer.validated_data, changed_by=request.user)
+        order = create_order_from_note(
+            serializer.validated_data,
+            changed_by=request.user,
+            folio_strategy=request_folio_strategy(request),
+        )
 
         return Response(
             build_order_record(order),

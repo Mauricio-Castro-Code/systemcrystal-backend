@@ -27,8 +27,8 @@ def extract_order_sequence_value(order_id: str, year_suffix: str) -> int | None:
     return int(value_part)
 
 
-def next_available_order_value(year_suffix: str) -> int:
-    used_values = sorted(
+def used_order_values(year_suffix: str) -> list[int]:
+    return sorted(
         value
         for value in (
             extract_order_sequence_value(order_id, year_suffix)
@@ -39,9 +39,12 @@ def next_available_order_value(year_suffix: str) -> int:
         if value is not None
     )
 
+
+def next_available_order_value(year_suffix: str) -> int:
+    """Menor folio libre (rellena huecos para mantener la secuencia compacta)."""
     next_value = 1
 
-    for used_value in used_values:
+    for used_value in used_order_values(year_suffix):
         if used_value < next_value:
             continue
 
@@ -54,7 +57,37 @@ def next_available_order_value(year_suffix: str) -> int:
     return next_value
 
 
-def next_document_code(sequence_key: str, reference_date=None) -> str:
+def next_sequential_order_value(year_suffix: str) -> int:
+    """Siguiente folio estrictamente secuencial (ignora huecos): max usado + 1."""
+    used_values = used_order_values(year_suffix)
+    return (used_values[-1] if used_values else 0) + 1
+
+
+def order_folio_options(reference_date=None) -> dict:
+    """Opciones de folio para una nueva orden: rellenar hueco vs. secuencial."""
+    if reference_date is None:
+        reference_date = timezone.localdate()
+
+    year_suffix = reference_date.strftime("%y")
+    fill_value = next_available_order_value(year_suffix)
+    sequential_value = next_sequential_order_value(year_suffix)
+
+    return {
+        "yearSuffix": year_suffix,
+        "fillValue": fill_value,
+        "sequentialValue": sequential_value,
+        "fillFolio": f"{fill_value:04d}-{year_suffix}",
+        "sequentialFolio": f"{sequential_value:04d}-{year_suffix}",
+        "hasGap": fill_value < sequential_value,
+    }
+
+
+def next_document_code(
+    sequence_key: str,
+    reference_date=None,
+    *,
+    order_strategy: str = "fill",
+) -> str:
     year_suffix = ""
 
     if reference_date is None:
@@ -86,8 +119,12 @@ def next_document_code(sequence_key: str, reference_date=None) -> str:
                     continue
 
             if sequence_key == DocumentSequence.Key.ORDER:
-                # Notes reuse deleted folios so the yearly sequence stays compact.
-                next_value = next_available_order_value(year_suffix)
+                # "sequential" = max usado + 1; "fill" = rellena el primer hueco
+                # disponible para mantener la secuencia anual compacta.
+                if order_strategy == "sequential":
+                    next_value = next_sequential_order_value(year_suffix)
+                else:
+                    next_value = next_available_order_value(year_suffix)
                 sequence.last_value = max(sequence.last_value, next_value)
             else:
                 sequence.last_value += 1
@@ -301,11 +338,12 @@ class Order(TimestampedModel):
     class Meta:
         ordering = ("-confirmed_at", "-created_at")
 
-    def save(self, *args, **kwargs):
+    def save(self, *args, folio_strategy: str = "fill", **kwargs):
         if not self.order_id:
             self.order_id = next_document_code(
                 DocumentSequence.Key.ORDER,
                 self.confirmed_at.date(),
+                order_strategy=folio_strategy,
             )
 
         super().save(*args, **kwargs)

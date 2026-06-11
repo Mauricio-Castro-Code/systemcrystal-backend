@@ -204,23 +204,34 @@ def update_quotation_from_note(quotation: Quotation, note: dict) -> Quotation:
 
 
 @transaction.atomic
-def confirm_quotation_as_order(quotation: Quotation, changed_by=None) -> Order:
+def confirm_quotation_as_order(
+    quotation: Quotation,
+    changed_by=None,
+    folio_strategy: str = "fill",
+) -> Order:
     quotation.status = Quotation.Status.CONFIRMED
     quotation.save(update_fields=["status", "updated_at"])
 
-    order, was_created = Order.objects.get_or_create(quotation=quotation)
+    order = Order.objects.filter(quotation=quotation).first()
 
-    if was_created:
+    if order is None:
+        order = Order(quotation=quotation)
+        order.save(folio_strategy=folio_strategy)
         create_initial_order_workflow(order, changed_by)
 
     return order
 
 
 @transaction.atomic
-def create_order_from_note(note: dict, changed_by=None) -> Order:
+def create_order_from_note(
+    note: dict,
+    changed_by=None,
+    folio_strategy: str = "fill",
+) -> Order:
     quotation = Quotation(status=Quotation.Status.CONFIRMED, client_name="")
     quotation = apply_note_to_quotation(quotation, note)
-    order = Order.objects.create(quotation=quotation)
+    order = Order(quotation=quotation)
+    order.save(folio_strategy=folio_strategy)
     create_initial_order_workflow(order, changed_by)
     return order
 
