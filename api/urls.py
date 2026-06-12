@@ -29,6 +29,8 @@ from .views import (
     QuotationListCreateView,
     QuotationPdfExportView,
     RegisterView,
+    TeamMemberDetailView,
+    TeamMemberListCreateView,
 )
 
 urlpatterns = [
@@ -37,6 +39,8 @@ urlpatterns = [
     path("auth/register/", RegisterView.as_view(), name="api-register"),
     path("auth/me/", CurrentSessionView.as_view(), name="api-me"),
     path("auth/logout/", LogoutView.as_view(), name="api-logout"),
+    path("team/", TeamMemberListCreateView.as_view(), name="team-list"),
+    path("team/<int:user_id>/", TeamMemberDetailView.as_view(), name="team-detail"),
     path("clients/", ClientListView.as_view(), name="client-list"),
     path("clients/<str:client_id>/", ClientDetailView.as_view(), name="client-detail"),
     path("inventory/", InventoryListCreateView.as_view(), name="inventory-list"),

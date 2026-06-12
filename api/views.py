@@ -42,12 +42,15 @@ from .models import (
     Order,
     Quotation,
     QuotationItem,
+    UserProfile,
     order_folio_options,
+    set_user_role,
 )
 from .presenters import (
     build_dashboard_overview,
     build_order_record,
     build_quotation_record,
+    build_team_member,
     build_user_session,
 )
 from .serializers import (
@@ -56,6 +59,8 @@ from .serializers import (
     OrderStatusUpdateSerializer,
     QuotationNoteSerializer,
     RegisterSerializer,
+    TeamMemberCreateSerializer,
+    TeamMemberUpdateSerializer,
 )
 from .services import (
     confirm_quotation_as_order,
@@ -316,6 +321,88 @@ class LogoutView(APIView):
         if request.auth:
             request.auth.delete()
 
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class TeamMemberListCreateView(APIView):
+    permission_classes = [IsAdminUser]
+
+    def get(self, request):
+        users = User.objects.select_related("profile").order_by(
+            "-is_staff", "first_name", "username",
+        )
+        return Response([build_team_member(user) for user in users])
+
+    def post(self, request):
+        serializer = TeamMemberCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        email = serializer.validated_data["email"].strip().lower()
+        password = serializer.validated_data["password"]
+        role = serializer.validated_data.get("role", UserProfile.Role.VENTAS)
+        display_name = str(
+            serializer.validated_data.get("displayName", ""),
+        ).strip() or build_name_from_email(email)
+
+        if User.objects.filter(email__iexact=email).exists() or User.objects.filter(
+            username__iexact=email,
+        ).exists():
+            raise ValidationError({"email": "Ya existe una cuenta con este correo."})
+
+        user = User.objects.create_user(
+            username=email,
+            email=email,
+            password=password,
+            first_name=display_name,
+        )
+        set_user_role(user, role)
+        user.refresh_from_db()
+
+        return Response(build_team_member(user), status=status.HTTP_201_CREATED)
+
+
+class TeamMemberDetailView(APIView):
+    permission_classes = [IsAdminUser]
+
+    def patch(self, request, user_id: int):
+        user = get_object_or_404(User, pk=user_id)
+        serializer = TeamMemberUpdateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        if "displayName" in data:
+            user.first_name = str(data["displayName"]).strip()
+
+        if "isActive" in data:
+            if user.pk == request.user.pk and not data["isActive"]:
+                raise ValidationError(
+                    {"isActive": "No puedes desactivar tu propia cuenta."},
+                )
+            user.is_active = bool(data["isActive"])
+
+        user.save()
+
+        if data.get("password"):
+            user.set_password(data["password"])
+            user.save(update_fields=["password"])
+
+        if "role" in data:
+            if user.pk == request.user.pk and data["role"] != UserProfile.Role.ADMIN:
+                raise ValidationError(
+                    {"role": "No puedes quitarte a ti mismo el rol de administrador."},
+                )
+            set_user_role(user, data["role"])
+
+        user.refresh_from_db()
+        return Response(build_team_member(user))
+
+    def delete(self, request, user_id: int):
+        user = get_object_or_404(User, pk=user_id)
+
+        if user.pk == request.user.pk:
+            raise ValidationError("No puedes eliminar tu propia cuenta.")
+
+        user.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 

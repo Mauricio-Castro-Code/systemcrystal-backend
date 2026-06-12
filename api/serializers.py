@@ -4,7 +4,7 @@ from decimal import Decimal, ROUND_HALF_UP
 
 from rest_framework import serializers
 
-from .models import Client, InventoryProduct, Order, normalize_text
+from .models import Client, InventoryProduct, Order, UserProfile, normalize_text
 
 
 TWO_DECIMAL_PLACES = Decimal("0.01")
@@ -29,6 +29,29 @@ class RegisterSerializer(serializers.Serializer):
     password = serializers.CharField(min_length=8, trim_whitespace=False, write_only=True)
     registrationKey = serializers.CharField(min_length=6, trim_whitespace=True, write_only=True)
     role = serializers.ChoiceField(choices=ROLE_CHOICES, default=ROLE_VENTAS)
+
+
+class TeamMemberCreateSerializer(serializers.Serializer):
+    displayName = serializers.CharField(max_length=120, allow_blank=True, required=False)
+    email = serializers.EmailField()
+    password = serializers.CharField(min_length=8, trim_whitespace=False, write_only=True)
+    role = serializers.ChoiceField(
+        choices=UserProfile.Role.choices,
+        default=UserProfile.Role.VENTAS,
+    )
+
+
+class TeamMemberUpdateSerializer(serializers.Serializer):
+    displayName = serializers.CharField(max_length=120, allow_blank=True, required=False)
+    role = serializers.ChoiceField(choices=UserProfile.Role.choices, required=False)
+    isActive = serializers.BooleanField(required=False)
+    password = serializers.CharField(
+        min_length=8,
+        trim_whitespace=False,
+        write_only=True,
+        required=False,
+        allow_blank=True,
+    )
 
 
 class ClientSerializer(serializers.ModelSerializer):

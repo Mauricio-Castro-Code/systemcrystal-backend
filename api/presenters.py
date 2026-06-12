@@ -5,7 +5,10 @@ from datetime import timedelta
 from django.utils import formats
 from django.utils import timezone
 
-from .models import Order, OrderWorkflowEvent
+from .models import Order, OrderWorkflowEvent, UserProfile, get_user_role
+
+
+ROLE_LABELS = dict(UserProfile.Role.choices)
 
 
 # Etiquetas visibles del estado operativo (el valor en BD sigue siendo
@@ -34,6 +37,7 @@ BILLING_FOLDER_LABELS = {
 
 def build_user_session(user, token_key: str) -> dict:
     full_name = user.get_full_name().strip()
+    role = get_user_role(user)
 
     return {
         "id": str(user.pk),
@@ -41,6 +45,23 @@ def build_user_session(user, token_key: str) -> dict:
         "email": user.email or "",
         "token": token_key,
         "isAdmin": bool(user.is_staff),
+        "role": role,
+    }
+
+
+def build_team_member(user) -> dict:
+    full_name = user.get_full_name().strip()
+    role = get_user_role(user)
+
+    return {
+        "id": str(user.pk),
+        "displayName": full_name or user.username,
+        "email": user.email or "",
+        "role": role,
+        "roleLabel": ROLE_LABELS.get(role, role),
+        "isActive": bool(user.is_active),
+        "isAdmin": bool(user.is_staff),
+        "createdAt": user.date_joined.isoformat() if user.date_joined else None,
     }
 
 

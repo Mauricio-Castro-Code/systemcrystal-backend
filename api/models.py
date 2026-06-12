@@ -397,3 +397,48 @@ class OrderWorkflowEvent(TimestampedModel):
 
     def __str__(self) -> str:
         return f"{self.order.order_id} {self.category} -> {self.to_status}"
+
+
+class UserProfile(TimestampedModel):
+    class Role(models.TextChoices):
+        ADMIN = "admin", "Administrador"
+        VENTAS = "ventas", "Ventas"
+        CHOFER = "chofer", "Chofer"
+
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL,
+        related_name="profile",
+        on_delete=models.CASCADE,
+    )
+    role = models.CharField(
+        max_length=20,
+        choices=Role.choices,
+        default=Role.VENTAS,
+    )
+
+    def __str__(self) -> str:
+        return f"{self.user.username} ({self.role})"
+
+
+def get_user_role(user) -> str:
+    """Rol del usuario; si no tiene perfil, se deriva de is_staff."""
+    try:
+        return user.profile.role
+    except UserProfile.DoesNotExist:
+        return UserProfile.Role.ADMIN if user.is_staff else UserProfile.Role.VENTAS
+
+
+def set_user_role(user, role: str) -> None:
+    """Asigna el rol (crea el perfil si falta) y sincroniza is_staff."""
+    normalized_role = role if role in UserProfile.Role.values else UserProfile.Role.VENTAS
+
+    UserProfile.objects.update_or_create(
+        user=user,
+        defaults={"role": normalized_role},
+    )
+
+    is_admin = normalized_role == UserProfile.Role.ADMIN
+
+    if user.is_staff != is_admin:
+        user.is_staff = is_admin
+        user.save(update_fields=["is_staff"])
