@@ -691,7 +691,7 @@ class OrderWorkflowApiTests(AuthenticatedApiTestCase):
             Order.OperationalStatus.ENTREGADO,
         )
         self.assertIn("por-recoger", update_status_response.data["folderKeys"])
-        self.assertIn("Por recoger", update_status_response.data["folderLabels"])
+        self.assertIn("En Ruta", update_status_response.data["folderLabels"])
 
         filtered_response = self.client.get(
             reverse("order-list"),

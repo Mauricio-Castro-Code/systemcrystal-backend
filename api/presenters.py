@@ -8,10 +8,20 @@ from django.utils import timezone
 from .models import Order, OrderWorkflowEvent
 
 
+# Etiquetas visibles del estado operativo (el valor en BD sigue siendo
+# POR_RECOGER; aqui se muestra como "En Ruta" por decision de negocio).
+OPERATIONAL_STATUS_LABELS = {
+    Order.OperationalStatus.PROGRAMADA: "Programada",
+    Order.OperationalStatus.ENTREGADO: "Entregado",
+    Order.OperationalStatus.POR_RECOGER: "En Ruta",
+    Order.OperationalStatus.CLIENTE_ENTREGA: "Cliente entrega",
+    Order.OperationalStatus.RECOGIDO: "Recogido",
+}
+
 OPERATIONAL_FOLDER_LABELS = {
     Order.OperationalStatus.PROGRAMADA: "Programadas",
-    Order.OperationalStatus.ENTREGADO: "Por recoger",
-    Order.OperationalStatus.POR_RECOGER: "Por recoger",
+    Order.OperationalStatus.ENTREGADO: "En Ruta",
+    Order.OperationalStatus.POR_RECOGER: "En Ruta",
     Order.OperationalStatus.CLIENTE_ENTREGA: "Cliente entrega",
     Order.OperationalStatus.RECOGIDO: "Recogido",
 }
@@ -100,7 +110,9 @@ def build_order_record(order) -> dict:
         "date": order.confirmed_at.isoformat(),
         "status": order.status,
         "operationalStatus": order.operational_status,
-        "operationalStatusLabel": order.get_operational_status_display(),
+        "operationalStatusLabel": OPERATIONAL_STATUS_LABELS.get(
+            order.operational_status, order.get_operational_status_display()
+        ),
         "billingStatus": order.billing_status,
         "billingStatusLabel": order.get_billing_status_display(),
         "folderKeys": resolve_order_folder_keys(order),
