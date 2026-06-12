@@ -667,7 +667,7 @@ class OrderWorkflowApiTests(AuthenticatedApiTestCase):
         self.assertEqual(pagado_response.status_code, 200)
         self.assertEqual(len(pagado_response.data), 0)
 
-    def test_delivered_orders_are_grouped_under_por_recoger_folder(self):
+    def test_delivered_orders_are_grouped_under_entregado_folder(self):
         create_response = self.client.post(
             reverse("order-list"),
             build_quotation_payload(),
@@ -690,12 +690,12 @@ class OrderWorkflowApiTests(AuthenticatedApiTestCase):
             update_status_response.data["operationalStatus"],
             Order.OperationalStatus.ENTREGADO,
         )
-        self.assertIn("por-recoger", update_status_response.data["folderKeys"])
-        self.assertIn("En Ruta", update_status_response.data["folderLabels"])
+        self.assertIn("entregado", update_status_response.data["folderKeys"])
+        self.assertIn("Entregado", update_status_response.data["folderLabels"])
 
         filtered_response = self.client.get(
             reverse("order-list"),
-            {"folder": "por-recoger"},
+            {"folder": "entregado"},
         )
 
         self.assertEqual(filtered_response.status_code, 200)

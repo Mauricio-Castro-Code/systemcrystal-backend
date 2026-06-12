@@ -20,7 +20,7 @@ OPERATIONAL_STATUS_LABELS = {
 
 OPERATIONAL_FOLDER_LABELS = {
     Order.OperationalStatus.PROGRAMADA: "Programadas",
-    Order.OperationalStatus.ENTREGADO: "En Ruta",
+    Order.OperationalStatus.ENTREGADO: "Entregado",
     Order.OperationalStatus.POR_RECOGER: "En Ruta",
     Order.OperationalStatus.CLIENTE_ENTREGA: "Cliente entrega",
     Order.OperationalStatus.RECOGIDO: "Recogido",
@@ -211,9 +211,6 @@ def build_dashboard_overview(orders, quotations, delivery_range: tuple) -> dict:
 
 def resolve_order_folder_keys(order: Order) -> list[str]:
     operational_folder_key = order.operational_status.lower().replace("_", "-")
-
-    if order.operational_status == Order.OperationalStatus.ENTREGADO:
-        operational_folder_key = "por-recoger"
 
     folder_keys = [operational_folder_key]
 

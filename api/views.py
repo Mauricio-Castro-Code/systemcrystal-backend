@@ -120,19 +120,12 @@ def filter_orders_by_folder(order_list, folder_key: str):
             if order.billing_status == Order.BillingStatus.COBRADO
         ]
 
-    if folder_key in {"por-recoger", "entregado", "entregados"}:
-        return [
-            order
-            for order in order_list
-            if order.operational_status in {
-                Order.OperationalStatus.ENTREGADO,
-                Order.OperationalStatus.POR_RECOGER,
-            }
-        ]
-
     operational_folder_map = {
         "programada": Order.OperationalStatus.PROGRAMADA,
         "programadas": Order.OperationalStatus.PROGRAMADA,
+        "entregado": Order.OperationalStatus.ENTREGADO,
+        "entregados": Order.OperationalStatus.ENTREGADO,
+        "por-recoger": Order.OperationalStatus.POR_RECOGER,
         "cliente-entrega": Order.OperationalStatus.CLIENTE_ENTREGA,
         "recogido": Order.OperationalStatus.RECOGIDO,
     }
