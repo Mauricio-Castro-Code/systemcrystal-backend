@@ -672,11 +672,15 @@ class OrderBulkStatusUpdateView(APIView):
         if not isinstance(order_ids, list) or not order_ids:
             raise ValidationError("orderIds debe ser una lista no vacía.")
 
-        serializer = OrderStatusUpdateSerializer(data={
-            "operationalStatus": request.data.get("operationalStatus"),
-            "billingStatus": request.data.get("billingStatus"),
-            "comment": request.data.get("comment", ""),
-        })
+        # Solo incluimos los estados realmente enviados; pasar None explicito
+        # haria fallar el ChoiceField con "Este campo no puede ser nulo".
+        status_data = {"comment": request.data.get("comment", "")}
+        if request.data.get("operationalStatus") is not None:
+            status_data["operationalStatus"] = request.data.get("operationalStatus")
+        if request.data.get("billingStatus") is not None:
+            status_data["billingStatus"] = request.data.get("billingStatus")
+
+        serializer = OrderStatusUpdateSerializer(data=status_data)
         serializer.is_valid(raise_exception=True)
 
         orders = get_order_base_queryset().filter(order_id__in=order_ids)
