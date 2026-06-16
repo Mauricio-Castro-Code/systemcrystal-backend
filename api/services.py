@@ -237,6 +237,40 @@ def create_order_from_note(
 
 
 @transaction.atomic
+def create_order_from_imported_note(
+    note: dict,
+    *,
+    order_id: str = "",
+    changed_by=None,
+    operational_status: str = Order.OperationalStatus.PROGRAMADA,
+    billing_status: str = Order.BillingStatus.AL_CORRIENTE,
+    confirmed_at=None,
+) -> Order:
+    """Crea una orden confirmada a partir de una nota importada desde Excel.
+
+    Reutiliza el upsert de cliente (así un cliente que solo estaba en la nota
+    de Excel queda dado de alta en el directorio). Si `order_id` viene vacío se
+    genera el siguiente folio disponible; si viene, se respeta tal cual.
+    """
+    quotation = Quotation(status=Quotation.Status.CONFIRMED, client_name="")
+    quotation = apply_note_to_quotation(quotation, note)
+
+    order = Order(
+        quotation=quotation,
+        operational_status=operational_status,
+        billing_status=billing_status,
+    )
+    if order_id:
+        order.order_id = order_id
+    if confirmed_at:
+        order.confirmed_at = confirmed_at
+
+    order.save(folio_strategy="fill")
+    create_initial_order_workflow(order, changed_by)
+    return order
+
+
+@transaction.atomic
 def update_order_from_note(order: Order, note: dict) -> Order:
     apply_note_to_quotation(order.quotation, note)
     return order

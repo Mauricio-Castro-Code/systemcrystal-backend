@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from datetime import date as calendar_date, timedelta
+from datetime import date as calendar_date, datetime, time, timedelta
+from io import BytesIO
 import re
 
 from django.conf import settings
@@ -46,6 +47,7 @@ from .models import (
     order_folio_options,
     set_user_role,
 )
+from .note_import import NoteImportError, read_note_excel
 from .presenters import (
     build_dashboard_overview,
     build_order_record,
@@ -64,6 +66,7 @@ from .serializers import (
 )
 from .services import (
     confirm_quotation_as_order,
+    create_order_from_imported_note,
     create_order_from_note,
     create_quotation_from_note,
     delete_order_and_quotation,
@@ -585,6 +588,62 @@ class QuotationConfirmView(APIView):
 class OrderFolioOptionsView(APIView):
     def get(self, request):
         return Response(order_folio_options())
+
+
+class OrderImportView(APIView):
+    """Importa una nota desde un archivo Excel (.xlsx) con la plantilla de Crystal."""
+
+    permission_classes = [IsAdminUser]
+
+    def post(self, request):
+        upload = request.FILES.get("file")
+
+        if upload is None:
+            raise ValidationError({"file": "Adjunta un archivo de Excel (.xlsx)."})
+
+        if not upload.name.lower().endswith(".xlsx"):
+            raise ValidationError(
+                {"file": "El archivo debe ser .xlsx (la plantilla de nota de Crystal)."},
+            )
+
+        try:
+            parsed = read_note_excel(BytesIO(upload.read()))
+        except NoteImportError as error:
+            raise ValidationError({"file": str(error)}) from error
+
+        note = parsed["note"]
+
+        if not note["clientInfo"]["fullName"]:
+            raise ValidationError(
+                {"file": "El Excel no tiene nombre de cliente (celda B9). Revisa la nota."},
+            )
+
+        folio = parsed["folio"]
+
+        if folio and Order.objects.filter(order_id=folio).exists():
+            raise ValidationError(
+                {"file": f"Ya existe una nota con el folio {folio} en el sistema."},
+            )
+
+        confirmed_at = None
+        note_date = parsed["noteDate"]
+        if note_date:
+            confirmed_at = timezone.make_aware(
+                datetime.combine(note_date, time.min),
+            )
+
+        order = create_order_from_imported_note(
+            note,
+            order_id=folio,
+            changed_by=request.user,
+            confirmed_at=confirmed_at,
+        )
+
+        refreshed_order = get_object_or_404(get_order_base_queryset(), pk=order.pk)
+        return Response(
+            build_order_record(refreshed_order),
+            status=status.HTTP_201_CREATED,
+        )
 
 
 class OrderListCreateView(APIView):
