@@ -11,10 +11,16 @@ from django.db import transaction
 from django.http import HttpResponse
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
+from django.utils.dateparse import parse_date
 from rest_framework import status
 from rest_framework.authentication import TokenAuthentication
 from rest_framework.authtoken.models import Token
-from rest_framework.exceptions import AuthenticationFailed, NotFound, ValidationError
+from rest_framework.exceptions import (
+    AuthenticationFailed,
+    NotFound,
+    PermissionDenied,
+    ValidationError,
+)
 from rest_framework.permissions import AllowAny, BasePermission
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -23,6 +29,17 @@ from rest_framework.views import APIView
 class IsAdminUser(BasePermission):
     def has_permission(self, request, view):
         return bool(request.user and request.user.is_authenticated and request.user.is_staff)
+
+
+class IsChofer(BasePermission):
+    def has_permission(self, request, view):
+        from .models import UserProfile, get_user_role
+
+        return bool(
+            request.user
+            and request.user.is_authenticated
+            and get_user_role(request.user) == UserProfile.Role.CHOFER
+        )
 
 from .client_directory import (
     build_client_directory_entries,
@@ -44,12 +61,14 @@ from .models import (
     Quotation,
     QuotationItem,
     UserProfile,
+    get_user_role,
     order_folio_options,
     set_user_role,
 )
 from .note_import import NoteImportError, read_note_excel
 from .presenters import (
     build_dashboard_overview,
+    build_driver_route,
     build_order_record,
     build_quotation_record,
     build_team_member,
@@ -58,6 +77,7 @@ from .presenters import (
 from .serializers import (
     InventoryItemSerializer,
     LoginSerializer,
+    OrderAssignmentSerializer,
     OrderStatusUpdateSerializer,
     QuotationNoteSerializer,
     RegisterSerializer,
@@ -65,6 +85,7 @@ from .serializers import (
     TeamMemberUpdateSerializer,
 )
 from .services import (
+    assign_order_driver,
     confirm_quotation_as_order,
     create_order_from_imported_note,
     create_order_from_note,
@@ -788,21 +809,99 @@ class OrderPdfExportView(APIView):
 
 
 class OrderStatusUpdateView(APIView):
+    # Estados operativos que un chofer puede fijar desde la calle.
+    CHOFER_ALLOWED_STATUSES = {
+        Order.OperationalStatus.EN_CAMINO,
+        Order.OperationalStatus.ENTREGADO,
+        Order.OperationalStatus.POR_RECOGER,
+        Order.OperationalStatus.RECOGIDO,
+    }
+
     def post(self, request, order_id: str):
         order = get_object_or_404(get_order_base_queryset(), order_id=order_id)
         serializer = OrderStatusUpdateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
+        operational_status = serializer.validated_data.get("operationalStatus")
+        billing_status = serializer.validated_data.get("billingStatus")
+
+        # Un chofer solo puede mover el estado operativo de SUS órdenes, nunca el cobro.
+        if get_user_role(request.user) == UserProfile.Role.CHOFER:
+            if order.assigned_driver_id != request.user.id:
+                raise PermissionDenied("Esta nota no está asignada a ti.")
+            if billing_status:
+                raise PermissionDenied("Un chofer no puede cambiar el estado de cobro.")
+            if operational_status and operational_status not in self.CHOFER_ALLOWED_STATUSES:
+                raise PermissionDenied("Estado operativo no permitido para chofer.")
+
         updated_order = update_order_statuses(
             order,
-            operational_status=serializer.validated_data.get("operationalStatus"),
-            billing_status=serializer.validated_data.get("billingStatus"),
+            operational_status=operational_status,
+            billing_status=billing_status,
             changed_by=request.user,
             comment=serializer.validated_data.get("comment", ""),
         )
 
         refreshed_order = get_object_or_404(get_order_base_queryset(), pk=updated_order.pk)
         return Response(build_order_record(refreshed_order))
+
+
+class OrderAssignmentView(APIView):
+    """Admin asigna/desasigna chofer y/o ubicación de Maps a una nota."""
+
+    permission_classes = [IsAdminUser]
+
+    def post(self, request, order_id: str):
+        order = get_object_or_404(get_order_base_queryset(), order_id=order_id)
+        serializer = OrderAssignmentSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        assign_kwargs = {"changed_by": request.user}
+
+        if "driverId" in data:
+            driver_id = data["driverId"]
+            if driver_id is None:
+                assign_kwargs["driver"] = None
+            else:
+                driver = get_object_or_404(User, pk=driver_id)
+                if get_user_role(driver) != UserProfile.Role.CHOFER:
+                    raise ValidationError({"driverId": "El usuario no es un chofer."})
+                assign_kwargs["driver"] = driver
+
+        if "mapsUrl" in data:
+            assign_kwargs["maps_url"] = data["mapsUrl"]
+
+        updated_order = assign_order_driver(order, **assign_kwargs)
+        refreshed_order = get_object_or_404(get_order_base_queryset(), pk=updated_order.pk)
+        return Response(build_order_record(refreshed_order))
+
+
+class DriverRouteView(APIView):
+    """Vista 'Mi Ruta' del chofer autenticado para una fecha (default hoy)."""
+
+    permission_classes = [IsChofer]
+
+    def get(self, request):
+        raw_date = (request.query_params.get("date") or "").strip()
+        if raw_date:
+            parsed = parse_date(raw_date)
+            if parsed is None:
+                raise ValidationError({"date": "Formato de fecha inválido (YYYY-MM-DD)."})
+            route_date = parsed
+        else:
+            route_date = timezone.localdate()
+
+        orders = [
+            order
+            for order in get_order_base_queryset().filter(
+                assigned_driver_id=request.user.id,
+                is_cancelled=False,
+            )
+            if order.quotation.delivery_date == route_date
+        ]
+
+        return Response(build_driver_route(orders, route_date))
 
 
 class OrderBulkStatusUpdateView(APIView):

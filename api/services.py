@@ -193,6 +193,52 @@ def update_order_statuses(
 
 
 @transaction.atomic
+def assign_order_driver(
+    order: Order,
+    *,
+    driver=None,
+    maps_url: str | None = None,
+    changed_by=None,
+) -> Order:
+    """Asigna (o desasigna) chofer y/o ubicación de Maps a una orden.
+
+    `driver` puede ser un User, o None para desasignar.
+    `maps_url=None` deja la URL intacta; "" la limpia.
+    """
+    update_fields = ["updated_at"]
+    previous_driver = order.assigned_driver
+
+    if driver is not previous_driver:
+        order.assigned_driver = driver
+        update_fields.append("assigned_driver")
+
+        def _driver_label(user) -> str:
+            if user is None:
+                return "Sin asignar"
+            full_name = (user.get_full_name() or "").strip()
+            return full_name or user.username
+
+        create_order_workflow_event(
+            order,
+            category=OrderWorkflowEvent.Category.ASSIGNMENT,
+            from_status=_driver_label(previous_driver),
+            to_status=_driver_label(driver),
+            changed_by=changed_by,
+        )
+
+    if maps_url is not None:
+        normalized_url = str(maps_url or "").strip()
+        if normalized_url != order.maps_url:
+            order.maps_url = normalized_url
+            update_fields.append("maps_url")
+
+    if len(update_fields) > 1:
+        order.save(update_fields=update_fields)
+
+    return order
+
+
+@transaction.atomic
 def create_quotation_from_note(note: dict) -> Quotation:
     quotation = Quotation(status=Quotation.Status.DRAFT, client_name="")
     return apply_note_to_quotation(quotation, note)

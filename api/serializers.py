@@ -266,6 +266,23 @@ class QuotationNoteSerializer(serializers.Serializer):
         return normalized_items
 
 
+class OrderAssignmentSerializer(serializers.Serializer):
+    # driverId = null/None desasigna; ausente deja al chofer intacto.
+    driverId = serializers.IntegerField(required=False, allow_null=True)
+    mapsUrl = serializers.URLField(
+        max_length=500,
+        required=False,
+        allow_blank=True,
+    )
+
+    def validate(self, attrs):
+        if "driverId" not in attrs and "mapsUrl" not in attrs:
+            raise serializers.ValidationError(
+                "Debes enviar driverId y/o mapsUrl.",
+            )
+        return attrs
+
+
 class OrderStatusUpdateSerializer(serializers.Serializer):
     operationalStatus = serializers.ChoiceField(
         choices=Order.OperationalStatus.choices,

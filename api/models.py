@@ -301,6 +301,7 @@ class Order(TimestampedModel):
 
     class OperationalStatus(models.TextChoices):
         PROGRAMADA = "PROGRAMADA", "Programada"
+        EN_CAMINO = "EN_CAMINO", "En camino"
         ENTREGADO = "ENTREGADO", "Entregado"
         POR_RECOGER = "POR_RECOGER", "Por recoger"
         CLIENTE_ENTREGA = "CLIENTE_ENTREGA", "Cliente entrega"
@@ -334,6 +335,14 @@ class Order(TimestampedModel):
     )
     confirmed_at = models.DateTimeField(default=timezone.now)
     is_cancelled = models.BooleanField(default=False)
+    assigned_driver = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        related_name="assigned_orders",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+    )
+    maps_url = models.URLField(max_length=500, blank=True)
 
     class Meta:
         ordering = ("-confirmed_at", "-created_at")
@@ -374,6 +383,7 @@ class OrderWorkflowEvent(TimestampedModel):
     class Category(models.TextChoices):
         OPERATIONAL = "OPERATIONAL", "Operativo"
         BILLING = "BILLING", "Cobro"
+        ASSIGNMENT = "ASSIGNMENT", "Asignación"
 
     order = models.ForeignKey(
         Order,

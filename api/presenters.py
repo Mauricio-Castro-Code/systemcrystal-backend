@@ -15,6 +15,7 @@ ROLE_LABELS = dict(UserProfile.Role.choices)
 # POR_RECOGER; aqui se muestra como "En Ruta" por decision de negocio).
 OPERATIONAL_STATUS_LABELS = {
     Order.OperationalStatus.PROGRAMADA: "Programada",
+    Order.OperationalStatus.EN_CAMINO: "En camino",
     Order.OperationalStatus.ENTREGADO: "Entregado",
     Order.OperationalStatus.POR_RECOGER: "En Ruta",
     Order.OperationalStatus.CLIENTE_ENTREGA: "Cliente entrega",
@@ -23,6 +24,7 @@ OPERATIONAL_STATUS_LABELS = {
 
 OPERATIONAL_FOLDER_LABELS = {
     Order.OperationalStatus.PROGRAMADA: "Programadas",
+    Order.OperationalStatus.EN_CAMINO: "En camino",
     Order.OperationalStatus.ENTREGADO: "Entregado",
     Order.OperationalStatus.POR_RECOGER: "En Ruta",
     Order.OperationalStatus.CLIENTE_ENTREGA: "Cliente entrega",
@@ -140,6 +142,8 @@ def build_order_record(order) -> dict:
         "folderLabels": resolve_order_folder_labels(order),
         "totalEstimated": quotation.total_estimated,
         "isCancelled": order.is_cancelled,
+        "mapsUrl": order.maps_url or "",
+        "assignedDriver": build_driver_summary(order.assigned_driver),
         "quotation": build_quotation_note(quotation),
     }
 
@@ -376,4 +380,74 @@ def build_dashboard_agenda_order(order) -> dict:
         "clientName": order.quotation.client_name,
         "address": normalized_address,
         "total": order.quotation.total_estimated,
+    }
+
+
+def build_driver_summary(user) -> dict | None:
+    """Resumen mínimo de un chofer para incrustar en una orden."""
+    if user is None:
+        return None
+
+    full_name = (user.get_full_name() or "").strip()
+    return {
+        "id": user.id,
+        "name": full_name or user.username,
+    }
+
+
+def build_driver_route_stop(order) -> dict:
+    """Una parada de la ruta del chofer. Sin precios: solo qué y a dónde."""
+    quotation = order.quotation
+    address_parts = [quotation.address, quotation.neighborhood]
+    normalized_address = ", ".join(part for part in address_parts if part) or "Domicilio pendiente"
+
+    items = [
+        {"quantity": item.quantity, "equipment": item.equipment}
+        for item in quotation.equipment_items.all()
+    ]
+
+    return {
+        "orderId": order.order_id,
+        "clientName": quotation.client_name,
+        "address": normalized_address,
+        "reference": quotation.reference,
+        "phoneNumber": quotation.phone_number,
+        "deliveryInstructions": quotation.delivery_instructions,
+        "deliveryDate": quotation.delivery_date.isoformat() if quotation.delivery_date else None,
+        "eventDate": quotation.event_date.isoformat() if quotation.event_date else None,
+        "mapsUrl": order.maps_url or "",
+        "operationalStatus": order.operational_status,
+        "operationalStatusLabel": OPERATIONAL_STATUS_LABELS.get(
+            order.operational_status, order.get_operational_status_display()
+        ),
+        "itemsCount": len(items),
+        "items": items,
+    }
+
+
+# Estados que aún cuentan como "pendiente" en la ruta del chofer.
+DRIVER_PENDING_STATUSES = (
+    Order.OperationalStatus.PROGRAMADA,
+    Order.OperationalStatus.EN_CAMINO,
+)
+
+
+def build_driver_route(orders, route_date) -> dict:
+    """Construye la vista 'Mi Ruta' del chofer para una fecha dada."""
+    stops = [build_driver_route_stop(order) for order in orders]
+    total = len(stops)
+    completed = sum(
+        1
+        for order in orders
+        if order.operational_status not in DRIVER_PENDING_STATUSES
+    )
+    pending = total - completed
+
+    return {
+        "date": route_date.isoformat(),
+        "dateLabel": formats.date_format(route_date, "l j \\d\\e F").capitalize(),
+        "totalStops": total,
+        "completed": completed,
+        "pending": pending,
+        "stops": stops,
     }
