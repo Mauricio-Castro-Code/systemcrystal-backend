@@ -135,6 +135,8 @@ def build_address_history(clients: list[Client], quotations: list[Quotation]) ->
         address: str,
         reference: str,
         last_used_at,
+        address_line: str = "",
+        neighborhood: str = "",
     ) -> None:
         normalized_key = normalize_text(address)
 
@@ -146,6 +148,8 @@ def build_address_history(clients: list[Client], quotations: list[Quotation]) ->
         if existing_entry is None:
             addresses[normalized_key] = {
                 "address": address,
+                "addressLine": address_line,
+                "neighborhood": neighborhood,
                 "reference": reference,
                 "lastUsedAt": last_used_at,
                 "usageCount": 1,
@@ -164,18 +168,26 @@ def build_address_history(clients: list[Client], quotations: list[Quotation]) ->
         address = str(client.address or "").strip()
 
         if address:
-            register_address(address, "", client.updated_at)
+            register_address(address, "", client.updated_at, address_line=address)
 
     for quotation in quotations:
         address = compose_address(quotation.address, quotation.neighborhood)
         reference = str(quotation.reference or "").strip()
 
         if address:
-            register_address(address, reference, quotation.updated_at)
+            register_address(
+                address,
+                reference,
+                quotation.updated_at,
+                address_line=str(quotation.address or "").strip(),
+                neighborhood=str(quotation.neighborhood or "").strip(),
+            )
 
     return [
         {
             "address": entry["address"],
+            "addressLine": entry["addressLine"],
+            "neighborhood": entry["neighborhood"],
             "reference": entry["reference"],
             "lastUsedAt": entry["lastUsedAt"].isoformat(),
             "usageCount": entry["usageCount"],
