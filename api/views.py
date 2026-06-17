@@ -884,22 +884,32 @@ class DriverRouteView(APIView):
 
     def get(self, request):
         raw_date = (request.query_params.get("date") or "").strip()
+        date_filter = None
         if raw_date:
-            parsed = parse_date(raw_date)
-            if parsed is None:
+            date_filter = parse_date(raw_date)
+            if date_filter is None:
                 raise ValidationError({"date": "Formato de fecha inválido (YYYY-MM-DD)."})
-            route_date = parsed
+
+        base = get_order_base_queryset().filter(
+            assigned_driver_id=request.user.id,
+            is_cancelled=False,
+        )
+
+        if date_filter is not None:
+            # Vista de un día específico: solo las notas a entregar ese día.
+            orders = [o for o in base if o.quotation.delivery_date == date_filter]
+            route_date = date_filter
         else:
+            # Vista por defecto: toda la carga pendiente del chofer (sin las recogidas).
+            orders = [
+                o for o in base if o.operational_status != Order.OperationalStatus.RECOGIDO
+            ]
             route_date = timezone.localdate()
 
-        orders = [
-            order
-            for order in get_order_base_queryset().filter(
-                assigned_driver_id=request.user.id,
-                is_cancelled=False,
-            )
-            if order.quotation.delivery_date == route_date
-        ]
+        # Ordenamos por fecha de entrega (las sin fecha al final) para armar la ruta.
+        orders.sort(
+            key=lambda o: (o.quotation.delivery_date is None, o.quotation.delivery_date or route_date)
+        )
 
         return Response(build_driver_route(orders, route_date))
 
