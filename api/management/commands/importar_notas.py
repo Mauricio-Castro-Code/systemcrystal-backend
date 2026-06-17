@@ -94,8 +94,15 @@ class NotaExcelReader:
         self.path = path
 
     def read(self) -> dict | None:
-        if self.path.suffix.lower() not in (".xls", ".xlsx"):
-            return None
+        suffix = self.path.suffix.lower()
+        if suffix == ".xls":
+            return self._read_xls()
+        if suffix == ".xlsx":
+            return self._read_xlsx()
+        return None
+
+    def _read_xls(self) -> dict | None:
+        """Lee un .xls (binario antiguo) con xlrd."""
         try:
             import xlrd
         except ImportError:
@@ -140,6 +147,52 @@ class NotaExcelReader:
             except Exception:
                 return None
 
+        return self._extract(cv, date_cell)
+
+    def _read_xlsx(self) -> dict | None:
+        """Lee un .xlsx (ZIP/OpenXML) con openpyxl. Mismo layout Hoja3 que el .xls."""
+        import warnings
+
+        try:
+            from openpyxl import load_workbook
+        except ImportError:
+            return None
+
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                wb = load_workbook(str(self.path), data_only=True)
+        except Exception:
+            return None
+
+        if "Hoja3" in wb.sheetnames:
+            ws = wb["Hoja3"]
+        elif len(wb.worksheets) >= 5:
+            ws = wb.worksheets[4]
+        elif wb.worksheets:
+            ws = wb.worksheets[0]
+        else:
+            return None
+
+        def cv(row, col):
+            # row/col 0-indexados (como xlrd) -> openpyxl es 1-indexado.
+            value = ws.cell(row=row + 1, column=col + 1).value
+            if isinstance(value, str) and value.strip() == "":
+                return None
+            return value
+
+        def date_cell(row, col):
+            value = ws.cell(row=row + 1, column=col + 1).value
+            if isinstance(value, datetime.datetime):
+                return value.date()
+            if isinstance(value, datetime.date):
+                return value
+            return None
+
+        return self._extract(cv, date_cell)
+
+    def _extract(self, cv, date_cell) -> dict:
+        """Extrae la nota usando accesores 0-indexados (compartido xls/xlsx)."""
         client_name  = safe_str(cv(8, 1))   # B9
         address      = safe_str(cv(9, 1))   # B10
         phone        = safe_str(cv(9, 8))   # I10
@@ -148,19 +201,19 @@ class NotaExcelReader:
         note_date    = date_cell(11, 8)     # I12
 
         delivery_date   = date_cell(14, 1)     # B15
-        folio           = safe_str(cv(14, 8))  # I15
         event_date      = date_cell(15, 1)     # B16
         collection_date = date_cell(16, 1)     # B17
 
-        if not folio or "-" not in folio:
-            folio = self.path.stem  # "0001-26" desde el nombre del archivo
+        # El folio SIEMPRE sale del nombre del archivo ("0001-26"); el I15 interno
+        # a veces quedo desactualizado al copiar una nota previa y colisiona.
+        folio = self.path.stem
 
         # Localizar la fila del "Subtotal" dinamicamente (el template tiene 2 versiones:
         # una con subtotal en J42 y otra en J44 segun la cantidad de articulos).
         subtotal_row = None
         for r in range(38, 58):
-            v = ws.cell_value(r, 8) if ws.cell_type(r, 8) == 1 else ""
-            if "Subtotal" in str(v):
+            v = cv(r, 8)
+            if v is not None and "Subtotal" in str(v):
                 subtotal_row = r
                 break
 
@@ -430,7 +483,7 @@ class Command(BaseCommand):
         )
 
         with transaction.atomic():
-            client = self._find_or_create_client(data)
+            client = self._upsert_client(data)
             self._create_order(data, client, folio, resolved_op, resolved_billing)
 
         self.stdout.write(f"  OK     {folio} — {client_name}")
@@ -448,23 +501,41 @@ class Command(BaseCommand):
             return parts[1], int(parts[0])
         return "", 0
 
-    def _find_or_create_client(self, data: dict) -> Client:
-        """Busca cliente por telefono (digitos exactos). Si no existe, crea uno nuevo."""
-        phone_digits = only_digits(data["phone"])
+    def _upsert_client(self, data: dict) -> Client:
+        """Busca cliente por telefono y REFRESCA sus datos con los de la nota.
 
+        - Si existe (mismo telefono): actualiza nombre/telefono/direccion con lo
+          que diga la nota -26 (asi se corrige una direccion mal capturada).
+        - Si no existe: lo crea (ej. un cliente que solo estaba en la nota).
+        Nunca borra clientes; las notas de otros anios conservan su vinculo.
+        """
+        phone_digits = only_digits(data["phone"])
+        full_name = data["client_name"] or "Cliente sin nombre"
+        address = ", ".join(
+            p for p in [data["address"], data["neighborhood"]] if p
+        )
+
+        client = None
         if phone_digits:
             client = Client.objects.filter(phone_digits=phone_digits).first()
-            if client:
-                return client
 
-        return Client.objects.create(
-            client_name=data["client_name"],
-            contact_person=data["client_name"],
-            phone_number=data["phone"],
-            address=", ".join(
-                p for p in [data["address"], data["neighborhood"]] if p
-            ),
-        )
+        if client is None:
+            return Client.objects.create(
+                client_name=full_name,
+                contact_person=full_name,
+                phone_number=data["phone"],
+                address=address,
+            )
+
+        # Refrescar datos del cliente existente con la fuente de verdad (la nota).
+        client.client_name = full_name
+        client.contact_person = full_name
+        if data["phone"]:
+            client.phone_number = data["phone"]
+        if address:
+            client.address = address
+        client.save()
+        return client
 
     def _create_order(
         self,
