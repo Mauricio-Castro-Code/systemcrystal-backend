@@ -394,6 +394,12 @@ class TeamMemberDetailView(APIView):
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
 
+        # Regla: entre administradores no se puede tocar el acceso de otro.
+        target_is_other_admin = (
+            user.pk != request.user.pk
+            and get_user_role(user) == UserProfile.Role.ADMIN
+        )
+
         if "displayName" in data:
             user.first_name = str(data["displayName"]).strip()
 
@@ -401,6 +407,10 @@ class TeamMemberDetailView(APIView):
             if user.pk == request.user.pk and not data["isActive"]:
                 raise ValidationError(
                     {"isActive": "No puedes desactivar tu propia cuenta."},
+                )
+            if target_is_other_admin and not data["isActive"]:
+                raise ValidationError(
+                    {"isActive": "No puedes desactivar a otro administrador."},
                 )
             user.is_active = bool(data["isActive"])
 
@@ -415,6 +425,10 @@ class TeamMemberDetailView(APIView):
                 raise ValidationError(
                     {"role": "No puedes quitarte a ti mismo el rol de administrador."},
                 )
+            if target_is_other_admin and data["role"] != UserProfile.Role.ADMIN:
+                raise ValidationError(
+                    {"role": "No puedes quitarle el rol de administrador a otro administrador."},
+                )
             set_user_role(user, data["role"])
 
         user.refresh_from_db()
@@ -425,6 +439,9 @@ class TeamMemberDetailView(APIView):
 
         if user.pk == request.user.pk:
             raise ValidationError("No puedes eliminar tu propia cuenta.")
+
+        if get_user_role(user) == UserProfile.Role.ADMIN:
+            raise ValidationError("No puedes eliminar a otro administrador.")
 
         user.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
