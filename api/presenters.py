@@ -193,22 +193,22 @@ def build_dashboard_overview(orders, quotations, delivery_range: tuple) -> dict:
             {
                 "id": "today",
                 "title": "Pedidos para Hoy",
-                "subtitle": "Eventos programados para la jornada actual.",
-                "emptyMessage": "No hay pedidos con fecha de evento para hoy.",
+                "subtitle": "Entregas programadas para la jornada actual.",
+                "emptyMessage": "No hay pedidos con fecha de entrega para hoy.",
                 "orders": today_orders,
             },
             {
                 "id": "tomorrow",
                 "title": "Pedidos para Mañana",
-                "subtitle": "Preparacion temprana para la siguiente salida operativa.",
-                "emptyMessage": "No hay pedidos programados para manana.",
+                "subtitle": "Entregas programadas para la siguiente jornada.",
+                "emptyMessage": "No hay pedidos con fecha de entrega para manana.",
                 "orders": resolve_orders_for_date(order_list, tomorrow),
             },
             {
                 "id": "weekend",
                 "title": "Pedidos para el Fin de Semana",
-                "subtitle": "Vista anticipada de sabado y domingo para coordinacion logistica.",
-                "emptyMessage": "No hay pedidos cargados para el fin de semana.",
+                "subtitle": "Entregas de sabado y domingo para coordinacion logistica.",
+                "emptyMessage": "No hay pedidos con fecha de entrega para el fin de semana.",
                 "orders": resolve_weekend_orders(order_list, today, tomorrow),
             },
         ],
@@ -295,7 +295,7 @@ def resolve_orders_for_date(order_list, target_date) -> list[dict]:
             (
                 order
                 for order in order_list
-                if order.quotation.event_date and order.quotation.event_date == target_date
+                if order.quotation.delivery_date and order.quotation.delivery_date == target_date
             ),
             key=lambda order: order.order_id,
         )
@@ -306,20 +306,20 @@ def resolve_weekend_orders(order_list, today, tomorrow) -> list[dict]:
     filtered_orders = []
 
     for order in order_list:
-        event_date = order.quotation.event_date
+        delivery_date = order.quotation.delivery_date
 
-        if not event_date:
+        if not delivery_date:
             continue
 
-        day_difference = (event_date - today).days
+        day_difference = (delivery_date - today).days
 
         if day_difference < 0 or day_difference > 6:
             continue
 
-        if event_date in {today, tomorrow}:
+        if delivery_date in {today, tomorrow}:
             continue
 
-        if event_date.weekday() not in {5, 6}:
+        if delivery_date.weekday() not in {5, 6}:
             continue
 
         filtered_orders.append(order)
@@ -329,7 +329,7 @@ def resolve_weekend_orders(order_list, today, tomorrow) -> list[dict]:
         for order in sorted(
             filtered_orders,
             key=lambda order: (
-                order.quotation.event_date or today,
+                order.quotation.delivery_date or today,
                 order.order_id,
             ),
         )
