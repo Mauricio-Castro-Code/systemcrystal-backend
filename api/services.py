@@ -254,6 +254,7 @@ def confirm_quotation_as_order(
     quotation: Quotation,
     changed_by=None,
     folio_strategy: str = "fill",
+    folio_value: int | None = None,
 ) -> Order:
     quotation.status = Quotation.Status.CONFIRMED
     quotation.save(update_fields=["status", "updated_at"])
@@ -262,7 +263,7 @@ def confirm_quotation_as_order(
 
     if order is None:
         order = Order(quotation=quotation)
-        order.save(folio_strategy=folio_strategy)
+        order.save(folio_strategy=folio_strategy, folio_value=folio_value)
         create_initial_order_workflow(order, changed_by)
 
     return order
@@ -273,11 +274,12 @@ def create_order_from_note(
     note: dict,
     changed_by=None,
     folio_strategy: str = "fill",
+    folio_value: int | None = None,
 ) -> Order:
     quotation = Quotation(status=Quotation.Status.CONFIRMED, client_name="")
     quotation = apply_note_to_quotation(quotation, note)
     order = Order(quotation=quotation)
-    order.save(folio_strategy=folio_strategy)
+    order.save(folio_strategy=folio_strategy, folio_value=folio_value)
     create_initial_order_workflow(order, changed_by)
     return order
 

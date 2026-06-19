@@ -55,6 +55,7 @@ from .excel_exports import (
 )
 from .models import (
     Client,
+    FolioUnavailableError,
     FreightZone,
     InventoryProduct,
     Order,
@@ -129,6 +130,24 @@ def request_folder_key(request):
 def request_folio_strategy(request):
     value = str(request.data.get("folioStrategy") or "").strip().lower()
     return "sequential" if value == "sequential" else "fill"
+
+
+def request_folio_value(request):
+    """Folio explícito (hueco) elegido por el usuario; None si no aplica."""
+    raw = request.data.get("folioValue")
+
+    if raw in (None, ""):
+        return None
+
+    try:
+        value = int(raw)
+    except (TypeError, ValueError) as error:
+        raise ValidationError({"folioValue": "Folio inválido."}) from error
+
+    if value < 1:
+        raise ValidationError({"folioValue": "Folio inválido."})
+
+    return value
 
 
 def filter_orders_by_folder(order_list, folder_key: str):
@@ -611,11 +630,15 @@ class QuotationConfirmView(APIView):
             quotation_id=quotation_id,
             status=Quotation.Status.DRAFT,
         )
-        order = confirm_quotation_as_order(
-            quotation,
-            changed_by=request.user,
-            folio_strategy=request_folio_strategy(request),
-        )
+        try:
+            order = confirm_quotation_as_order(
+                quotation,
+                changed_by=request.user,
+                folio_strategy=request_folio_strategy(request),
+                folio_value=request_folio_value(request),
+            )
+        except FolioUnavailableError as error:
+            raise ValidationError({"folioValue": str(error)}) from error
 
         return Response(
             build_order_record(order),
@@ -692,11 +715,15 @@ class OrderListCreateView(APIView):
     def post(self, request):
         serializer = QuotationNoteSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        order = create_order_from_note(
-            serializer.validated_data,
-            changed_by=request.user,
-            folio_strategy=request_folio_strategy(request),
-        )
+        try:
+            order = create_order_from_note(
+                serializer.validated_data,
+                changed_by=request.user,
+                folio_strategy=request_folio_strategy(request),
+                folio_value=request_folio_value(request),
+            )
+        except FolioUnavailableError as error:
+            raise ValidationError({"folioValue": str(error)}) from error
 
         return Response(
             build_order_record(order),

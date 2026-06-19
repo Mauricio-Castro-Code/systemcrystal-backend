@@ -63,14 +63,26 @@ def next_sequential_order_value(year_suffix: str) -> int:
     return (used_values[-1] if used_values else 0) + 1
 
 
+def available_order_gaps(year_suffix: str) -> list[int]:
+    """Todos los folios libres por debajo del último usado (huecos por borrados)."""
+    used_values = used_order_values(year_suffix)
+
+    if not used_values:
+        return []
+
+    used_set = set(used_values)
+    return [value for value in range(1, used_values[-1]) if value not in used_set]
+
+
 def order_folio_options(reference_date=None) -> dict:
-    """Opciones de folio para una nueva orden: rellenar hueco vs. secuencial."""
+    """Opciones de folio para una nueva orden: huecos disponibles vs. secuencial."""
     if reference_date is None:
         reference_date = timezone.localdate()
 
     year_suffix = reference_date.strftime("%y")
     fill_value = next_available_order_value(year_suffix)
     sequential_value = next_sequential_order_value(year_suffix)
+    gaps = available_order_gaps(year_suffix)
 
     return {
         "yearSuffix": year_suffix,
@@ -78,8 +90,16 @@ def order_folio_options(reference_date=None) -> dict:
         "sequentialValue": sequential_value,
         "fillFolio": f"{fill_value:04d}-{year_suffix}",
         "sequentialFolio": f"{sequential_value:04d}-{year_suffix}",
-        "hasGap": fill_value < sequential_value,
+        "hasGap": bool(gaps),
+        "gaps": [
+            {"value": value, "folio": f"{value:04d}-{year_suffix}"}
+            for value in gaps
+        ],
     }
+
+
+class FolioUnavailableError(Exception):
+    """El folio elegido ya está en uso o no es válido."""
 
 
 def next_document_code(
@@ -87,6 +107,7 @@ def next_document_code(
     reference_date=None,
     *,
     order_strategy: str = "fill",
+    explicit_order_value: int | None = None,
 ) -> str:
     year_suffix = ""
 
@@ -119,9 +140,17 @@ def next_document_code(
                     continue
 
             if sequence_key == DocumentSequence.Key.ORDER:
+                # Folio explícito = hueco concreto elegido por el usuario.
                 # "sequential" = max usado + 1; "fill" = rellena el primer hueco
                 # disponible para mantener la secuencia anual compacta.
-                if order_strategy == "sequential":
+                if explicit_order_value is not None:
+                    if explicit_order_value in set(used_order_values(year_suffix)):
+                        raise FolioUnavailableError(
+                            f"El folio {explicit_order_value:04d}-{year_suffix} "
+                            "ya está en uso. Elige otro.",
+                        )
+                    next_value = explicit_order_value
+                elif order_strategy == "sequential":
                     next_value = next_sequential_order_value(year_suffix)
                 else:
                     next_value = next_available_order_value(year_suffix)
@@ -347,12 +376,19 @@ class Order(TimestampedModel):
     class Meta:
         ordering = ("-confirmed_at", "-created_at")
 
-    def save(self, *args, folio_strategy: str = "fill", **kwargs):
+    def save(
+        self,
+        *args,
+        folio_strategy: str = "fill",
+        folio_value: int | None = None,
+        **kwargs,
+    ):
         if not self.order_id:
             self.order_id = next_document_code(
                 DocumentSequence.Key.ORDER,
                 self.confirmed_at.date(),
                 order_strategy=folio_strategy,
+                explicit_order_value=folio_value,
             )
 
         super().save(*args, **kwargs)
