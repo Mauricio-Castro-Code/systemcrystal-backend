@@ -41,6 +41,17 @@ class IsChofer(BasePermission):
             and get_user_role(request.user) == UserProfile.Role.CHOFER
         )
 
+
+class IsAdminOrVentas(BasePermission):
+    def has_permission(self, request, view):
+        from .models import UserProfile, get_user_role
+
+        return bool(
+            request.user
+            and request.user.is_authenticated
+            and get_user_role(request.user) in (UserProfile.Role.ADMIN, UserProfile.Role.VENTAS)
+        )
+
 from .client_directory import (
     build_client_directory_entries,
     build_client_profile,
@@ -59,6 +70,7 @@ from .models import (
     FreightZone,
     InventoryProduct,
     Order,
+    OrderExtraCost,
     Quotation,
     QuotationItem,
     UserProfile,
@@ -79,6 +91,7 @@ from .serializers import (
     InventoryItemSerializer,
     LoginSerializer,
     OrderAssignmentSerializer,
+    OrderExtraCostSerializer,
     OrderStatusUpdateSerializer,
     QuotationNoteSerializer,
     RegisterSerializer,
@@ -115,7 +128,7 @@ def get_order_base_queryset():
 
     return (
         Order.objects.select_related("quotation")
-        .prefetch_related("quotation__equipment_items", "workflow_events__changed_by")
+        .prefetch_related("quotation__equipment_items", "workflow_events__changed_by", "extra_costs")
         .order_by(
             OrderBy(RawSQL(_year_sql, []), descending=True, nulls_last=True),
             OrderBy(RawSQL(_num_sql,  []), descending=True, nulls_last=True),
@@ -368,7 +381,10 @@ class LogoutView(APIView):
 
 
 class TeamMemberListCreateView(APIView):
-    permission_classes = [IsAdminUser]
+    def get_permissions(self):
+        if self.request.method == "POST":
+            return [IsAdminUser()]
+        return [IsAdminOrVentas()]
 
     def get(self, request):
         users = User.objects.select_related("profile").order_by(
@@ -891,9 +907,9 @@ class OrderStatusUpdateView(APIView):
 
 
 class OrderAssignmentView(APIView):
-    """Admin asigna/desasigna chofer y/o ubicación de Maps a una nota."""
+    """Admin o ventas asigna/desasigna chofer y/o ubicación de Maps a una nota."""
 
-    permission_classes = [IsAdminUser]
+    permission_classes = [IsAdminOrVentas]
 
     def post(self, request, order_id: str):
         order = get_object_or_404(get_order_base_queryset(), order_id=order_id)
@@ -918,6 +934,54 @@ class OrderAssignmentView(APIView):
 
         updated_order = assign_order_driver(order, **assign_kwargs)
         refreshed_order = get_object_or_404(get_order_base_queryset(), pk=updated_order.pk)
+        return Response(build_order_record(refreshed_order))
+
+
+class OrderExtraCostsView(APIView):
+    """Lista los costos externos de una nota y permite agregar uno nuevo."""
+
+    permission_classes = [IsAdminOrVentas]
+
+    def get(self, request, order_id: str):
+        order = get_object_or_404(get_order_base_queryset(), order_id=order_id)
+        return Response(build_order_record(order))
+
+    def post(self, request, order_id: str):
+        order = get_object_or_404(Order, order_id=order_id)
+        serializer = OrderExtraCostSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        OrderExtraCost.objects.create(
+            order=order,
+            concepto=serializer.validated_data["concepto"],
+            monto=serializer.validated_data["monto"],
+        )
+        refreshed_order = get_object_or_404(get_order_base_queryset(), pk=order.pk)
+        return Response(build_order_record(refreshed_order), status=status.HTTP_201_CREATED)
+
+
+class OrderExtraCostDeleteView(APIView):
+    """Elimina un costo externo individual."""
+
+    permission_classes = [IsAdminOrVentas]
+
+    def delete(self, request, order_id: str, cost_id: int):
+        order = get_object_or_404(Order, order_id=order_id)
+        cost = get_object_or_404(OrderExtraCost, pk=cost_id, order=order)
+        cost.delete()
+        refreshed_order = get_object_or_404(get_order_base_queryset(), pk=order.pk)
+        return Response(build_order_record(refreshed_order))
+
+
+class OrderCloseRegistroView(APIView):
+    """Marca o desmarca una nota como 'registro de oficina completo'."""
+
+    permission_classes = [IsAdminOrVentas]
+
+    def post(self, request, order_id: str):
+        order = get_object_or_404(Order, order_id=order_id)
+        order.office_closed = not order.office_closed
+        order.save(update_fields=["office_closed"])
+        refreshed_order = get_object_or_404(get_order_base_queryset(), pk=order.pk)
         return Response(build_order_record(refreshed_order))
 
 
@@ -1020,7 +1084,7 @@ class AccountingOverviewView(APIView):
 
         orders = list(
             Order.objects.select_related("quotation")
-            .prefetch_related("quotation__equipment_items")
+            .prefetch_related("quotation__equipment_items", "extra_costs")
             .filter(quotation__total_estimated__gt=0, is_cancelled=False)
         )
 
@@ -1045,21 +1109,28 @@ class AccountingOverviewView(APIView):
     def _order_date(self, order) -> "calendar_date":
         return order.quotation.event_date or order.confirmed_at.date()
 
+    def _order_costs(self, order) -> float:
+        return sum(float(c.monto) for c in order.extra_costs.all())
+
     def _build_monthly_sales(self, orders, year: int):
-        buckets = {month: 0.0 for month in range(1, 13)}
+        revenue_buckets = {month: 0.0 for month in range(1, 13)}
+        cost_buckets = {month: 0.0 for month in range(1, 13)}
 
         for order in orders:
             d = self._order_date(order)
             if d.year == year:
-                buckets[d.month] += float(order.quotation.total_estimated)
+                revenue_buckets[d.month] += float(order.quotation.total_estimated)
+                cost_buckets[d.month] += self._order_costs(order)
 
         return [
             {
                 "label": self.MONTH_NAMES[m - 1],
                 "month": m,
-                "value": round(v, 2),
+                "value": round(revenue_buckets[m], 2),
+                "costs": round(cost_buckets[m], 2),
+                "utility": round(revenue_buckets[m] - cost_buckets[m], 2),
             }
-            for m, v in buckets.items()
+            for m in range(1, 13)
         ]
 
     def _build_top_products(self, year_orders: list):
@@ -1179,19 +1250,22 @@ class AccountingOverviewView(APIView):
         def is_ytd(d) -> bool:
             return d.month < today.month
 
-        year_revenue = 0.0       # full year (or YTD if current year)
-        ytd_revenue = 0.0        # selected year up to today's month/day
-        prev_ytd_revenue = 0.0   # previous year up to same month/day
+        year_revenue = 0.0
+        ytd_revenue = 0.0
+        prev_ytd_revenue = 0.0
         month_revenue = 0.0
+        year_costs = 0.0
         total_orders = 0
 
         for order in orders:
             total_orders += 1
             amount = float(order.quotation.total_estimated)
+            costs = self._order_costs(order)
             d = self._order_date(order)
 
             if d.year == selected_year:
                 year_revenue += amount
+                year_costs += costs
                 if d.month == today.month:
                     month_revenue += amount
                 if is_ytd(d):
@@ -1213,6 +1287,8 @@ class AccountingOverviewView(APIView):
             "yoyPct": yoy_pct,
             "prevYear": prev_year,
             "totalOrders": total_orders,
+            "yearExtraCosts": round(year_costs, 2),
+            "yearUtility": round(year_revenue - year_costs, 2),
         }
 
     def _available_years(self, orders, today) -> list[int]:

@@ -266,6 +266,11 @@ class QuotationNoteSerializer(serializers.Serializer):
         return normalized_items
 
 
+class OrderExtraCostSerializer(serializers.Serializer):
+    concepto = serializers.CharField(max_length=220, allow_blank=False)
+    monto = serializers.DecimalField(max_digits=12, decimal_places=2, min_value=Decimal("0.01"))
+
+
 class OrderAssignmentSerializer(serializers.Serializer):
     # driverId = null/None desasigna; ausente deja al chofer intacto.
     driverId = serializers.IntegerField(required=False, allow_null=True)

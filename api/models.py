@@ -372,6 +372,7 @@ class Order(TimestampedModel):
         blank=True,
     )
     maps_url = models.URLField(max_length=500, blank=True)
+    office_closed = models.BooleanField(default=False)
 
     class Meta:
         ordering = ("-confirmed_at", "-created_at")
@@ -395,6 +396,22 @@ class Order(TimestampedModel):
 
     def __str__(self) -> str:
         return self.order_id
+
+
+class OrderExtraCost(TimestampedModel):
+    order = models.ForeignKey(
+        Order,
+        related_name="extra_costs",
+        on_delete=models.CASCADE,
+    )
+    concepto = models.CharField(max_length=220)
+    monto = models.DecimalField(max_digits=12, decimal_places=2)
+
+    class Meta:
+        ordering = ("created_at",)
+
+    def __str__(self) -> str:
+        return f"{self.order.order_id} — {self.concepto} ${self.monto}"
 
 
 class FreightZone(models.Model):

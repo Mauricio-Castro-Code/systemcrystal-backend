@@ -5,7 +5,7 @@ from datetime import timedelta
 from django.utils import formats
 from django.utils import timezone
 
-from .models import Order, OrderWorkflowEvent, UserProfile, get_user_role
+from .models import Order, OrderExtraCost, OrderWorkflowEvent, UserProfile, get_user_role
 
 
 ROLE_LABELS = dict(UserProfile.Role.choices)
@@ -124,8 +124,24 @@ def build_quotation_record(quotation) -> dict:
     }
 
 
+def build_extra_cost(cost: OrderExtraCost) -> dict:
+    return {
+        "id": cost.pk,
+        "concepto": cost.concepto,
+        "monto": cost.monto,
+    }
+
+
 def build_order_record(order) -> dict:
     quotation = order.quotation
+
+    extra_costs_manager = getattr(order, "extra_costs", None)
+    extra_costs = (
+        [build_extra_cost(c) for c in extra_costs_manager.all()]
+        if extra_costs_manager is not None
+        else []
+    )
+    total_extra_costs = sum(float(c["monto"]) for c in extra_costs)
 
     payload = {
         "orderId": order.order_id,
@@ -143,6 +159,9 @@ def build_order_record(order) -> dict:
         "totalEstimated": quotation.total_estimated,
         "isCancelled": order.is_cancelled,
         "mapsUrl": order.maps_url or "",
+        "officeClosed": order.office_closed,
+        "extraCosts": extra_costs,
+        "totalExtraCosts": round(total_extra_costs, 2),
         "assignedDriver": build_driver_summary(order.assigned_driver),
         "quotation": build_quotation_note(quotation),
     }
