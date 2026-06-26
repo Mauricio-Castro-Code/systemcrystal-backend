@@ -975,7 +975,7 @@ class OrderExtraCostDeleteView(APIView):
 class OrderCloseRegistroView(APIView):
     """Marca o desmarca una nota como 'registro de oficina completo'."""
 
-    permission_classes = [IsAdminOrVentas]
+    permission_classes = [IsAdminUser]
 
     def post(self, request, order_id: str):
         order = get_object_or_404(Order, order_id=order_id)
