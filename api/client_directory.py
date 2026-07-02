@@ -137,6 +137,7 @@ def build_address_history(clients: list[Client], quotations: list[Quotation]) ->
         last_used_at,
         address_line: str = "",
         neighborhood: str = "",
+        freight=None,
     ) -> None:
         normalized_key = normalize_text(address)
 
@@ -153,6 +154,8 @@ def build_address_history(clients: list[Client], quotations: list[Quotation]) ->
                 "reference": reference,
                 "lastUsedAt": last_used_at,
                 "usageCount": 1,
+                "freight": freight,
+                "freightAt": last_used_at if freight is not None else None,
             }
             return
 
@@ -164,6 +167,12 @@ def build_address_history(clients: list[Client], quotations: list[Quotation]) ->
         if reference and not existing_entry["reference"]:
             existing_entry["reference"] = reference
 
+        # Actualizar flete con el más reciente que tenga valor
+        if freight is not None:
+            if existing_entry["freightAt"] is None or last_used_at > existing_entry["freightAt"]:
+                existing_entry["freight"] = freight
+                existing_entry["freightAt"] = last_used_at
+
     for client in clients:
         address = str(client.address or "").strip()
 
@@ -173,6 +182,7 @@ def build_address_history(clients: list[Client], quotations: list[Quotation]) ->
     for quotation in quotations:
         address = compose_address(quotation.address, quotation.neighborhood)
         reference = str(quotation.reference or "").strip()
+        freight = float(quotation.freight) if quotation.freight else None
 
         if address:
             register_address(
@@ -181,6 +191,7 @@ def build_address_history(clients: list[Client], quotations: list[Quotation]) ->
                 quotation.updated_at,
                 address_line=str(quotation.address or "").strip(),
                 neighborhood=str(quotation.neighborhood or "").strip(),
+                freight=freight,
             )
 
     return [
@@ -191,6 +202,7 @@ def build_address_history(clients: list[Client], quotations: list[Quotation]) ->
             "reference": entry["reference"],
             "lastUsedAt": entry["lastUsedAt"].isoformat(),
             "usageCount": entry["usageCount"],
+            "freight": entry.get("freight"),
         }
         for entry in sorted(
             addresses.values(),
