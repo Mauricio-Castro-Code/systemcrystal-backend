@@ -167,6 +167,12 @@ def build_address_history(clients: list[Client], quotations: list[Quotation]) ->
         if reference and not existing_entry["reference"]:
             existing_entry["reference"] = reference
 
+        # Si la entrada existente no tiene colonia separada pero la nueva sí, la actualizamos
+        if neighborhood and not existing_entry["neighborhood"]:
+            existing_entry["neighborhood"] = neighborhood
+            if address_line:
+                existing_entry["addressLine"] = address_line
+
         # Actualizar flete con el más reciente que tenga valor
         if freight is not None:
             if existing_entry["freightAt"] is None or last_used_at > existing_entry["freightAt"]:
