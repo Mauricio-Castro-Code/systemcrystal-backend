@@ -4,6 +4,7 @@ from collections import defaultdict
 from datetime import date as calendar_date, datetime, time, timedelta
 from io import BytesIO
 import re
+import unicodedata
 
 from django.conf import settings
 from django.contrib.auth import authenticate, get_user_model
@@ -1067,6 +1068,38 @@ class DashboardOverviewView(APIView):
         return Response(build_dashboard_overview(orders, quotations, delivery_range))
 
 
+def _normalize_product_key(name: str) -> str:
+    """Clave normalizada para agrupar variantes del mismo producto.
+
+    Aplica: minúsculas, sin acentos, espacios normalizados, singular en español.
+    'Sillas Acojinadas' y 'silla acojinada' producen la misma clave.
+    """
+    text = name.strip().lower()
+    # Quitar acentos (NFD → filtrar marcas diacríticas → NFC)
+    text = unicodedata.normalize("NFD", text)
+    text = "".join(c for c in text if unicodedata.category(c) != "Mn")
+    # Normalizar espacios y guiones
+    text = re.sub(r"\s*[-–—]\s*", " - ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    # Singularizar cada palabra (reglas básicas del español)
+    words = []
+    vowels = set("aeiou")
+    for word in text.split():
+        if len(word) > 3 and word.endswith("es"):
+            stem = word[:-2]
+            # "manteles" → "mantel", "tenedores" → "tenedor" (stem termina en consonante)
+            if stem and stem[-1] not in vowels:
+                word = stem
+            else:
+                # "bases" → "base", "clases" → "clase"
+                word = word[:-1]
+        elif len(word) > 2 and word.endswith("s"):
+            # "sillas" → "silla", "mesas" → "mesa"
+            word = word[:-1]
+        words.append(word)
+    return " ".join(words)
+
+
 class AccountingOverviewView(APIView):
     permission_classes = [IsAdminUser]
 
@@ -1136,22 +1169,34 @@ class AccountingOverviewView(APIView):
     def _build_top_products(self, year_orders: list):
         qty_map: dict[str, int] = defaultdict(int)
         rev_map: dict[str, float] = defaultdict(float)
+        # Votos para elegir el nombre de display más frecuente por grupo
+        name_votes: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
 
         for order in year_orders:
             for item in order.quotation.equipment_items.all():
-                name = item.equipment or ""
-                qty_map[name] += item.quantity or 0
-                rev_map[name] += float(item.total or 0)
+                raw = (item.equipment or "").strip()
+                if not raw:
+                    continue
+                key = _normalize_product_key(raw)
+                qty_map[key] += item.quantity or 0
+                rev_map[key] += float(item.total or 0)
+                name_votes[key][raw] += 1
+
+        # Nombre de display = variante más usada en ese grupo
+        display = {
+            key: max(votes, key=votes.__getitem__)
+            for key, votes in name_votes.items()
+        }
 
         # Return 30 sorted by qty so the frontend can re-sort by revenue without missing items
-        top_names = sorted(qty_map, key=lambda n: qty_map[n], reverse=True)[:30]
+        top_keys = sorted(qty_map, key=lambda k: qty_map[k], reverse=True)[:30]
         return [
             {
-                "name": name,
-                "totalQty": qty_map[name],
-                "totalRevenue": round(rev_map[name], 2),
+                "name": display[key],
+                "totalQty": qty_map[key],
+                "totalRevenue": round(rev_map[key], 2),
             }
-            for name in top_names
+            for key in top_keys
         ]
 
     # ── Color extraction helpers ──────────────────────────────────────────────
