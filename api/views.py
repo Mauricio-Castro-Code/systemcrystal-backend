@@ -57,6 +57,7 @@ from .client_directory import (
     build_client_directory_entries,
     build_client_profile,
     resolve_client_group_by_code,
+    select_primary_client,
 )
 from .excel_exports import (
     ExcelTemplateExportError,
@@ -67,6 +68,7 @@ from .excel_exports import (
 )
 from .models import (
     Client,
+    ClientAddress,
     FolioUnavailableError,
     FreightZone,
     InventoryProduct,
@@ -89,6 +91,9 @@ from .presenters import (
     build_user_session,
 )
 from .serializers import (
+    ClientAddressSerializer,
+    ClientCreateSerializer,
+    ClientUpdateSerializer,
     InventoryItemSerializer,
     LoginSerializer,
     OrderAssignmentSerializer,
@@ -484,26 +489,153 @@ class TeamMemberDetailView(APIView):
 
 
 class ClientListView(APIView):
-    def get(self, request):
-        queryset = self.get_queryset()
-        return Response(build_client_directory_entries(queryset))
+    def get_permissions(self):
+        if self.request.method == "POST":
+            return [IsAdminUser()]
+        return super().get_permissions()
 
-    def get_queryset(self):
-        return Client.objects.all()
+    def get(self, request):
+        return Response(build_client_directory_entries(Client.objects.all()))
+
+    def post(self, request):
+        serializer = ClientCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        client = Client.objects.create(
+            client_name=data["clientName"],
+            contact_person=data["clientName"],
+            phone_number=data.get("phoneNumber", ""),
+            email=data.get("email", ""),
+        )
+
+        return Response(
+            {
+                "id": client.code,
+                "clientName": client.client_name,
+                "phoneNumber": client.phone_number,
+                "email": client.email,
+                "address": client.address,
+                "mergedRecords": 1,
+            },
+            status=status.HTTP_201_CREATED,
+        )
 
 
 class ClientDetailView(APIView):
-    def get(self, request, client_id: str):
-        client_group = resolve_client_group_by_code(Client.objects.all(), client_id)
-
-        if not client_group:
+    def _get_group_or_404(self, client_id: str):
+        group = resolve_client_group_by_code(Client.objects.all(), client_id)
+        if not group:
             raise NotFound("Cliente no encontrado.")
+        return group
 
-        client_ids = [client.pk for client in client_group]
+    def _build_response(self, group):
+        client_ids = [c.pk for c in group]
         quotations = Quotation.objects.filter(client_id__in=client_ids)
-        orders = Order.objects.select_related("quotation").filter(quotation__client_id__in=client_ids)
+        orders = Order.objects.select_related("quotation").filter(
+            quotation__client_id__in=client_ids
+        )
+        saved = ClientAddress.objects.filter(client__in=client_ids)
+        return Response(build_client_profile(group, quotations, orders, saved))
 
-        return Response(build_client_profile(client_group, quotations, orders))
+    def get(self, request, client_id: str):
+        return self._build_response(self._get_group_or_404(client_id))
+
+    def patch(self, request, client_id: str):
+        if not request.user.is_staff:
+            return Response({"detail": "No autorizado."}, status=status.HTTP_403_FORBIDDEN)
+
+        serializer = ClientUpdateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        group = self._get_group_or_404(client_id)
+        primary = select_primary_client(group)
+
+        if "clientName" in data:
+            primary.client_name = data["clientName"]
+            primary.contact_person = data["clientName"]
+        if "phoneNumber" in data:
+            primary.phone_number = data["phoneNumber"]
+        if "email" in data:
+            primary.email = data["email"]
+
+        primary.save()
+        return self._build_response(self._get_group_or_404(client_id))
+
+
+class ClientAddressListCreateView(APIView):
+    permission_classes = [IsAdminUser]
+
+    def _get_primary_or_404(self, client_id: str):
+        group = resolve_client_group_by_code(Client.objects.all(), client_id)
+        if not group:
+            raise NotFound("Cliente no encontrado.")
+        return group, select_primary_client(group)
+
+    def _build_response(self, group):
+        client_ids = [c.pk for c in group]
+        quotations = Quotation.objects.filter(client_id__in=client_ids)
+        orders = Order.objects.select_related("quotation").filter(
+            quotation__client_id__in=client_ids
+        )
+        saved = ClientAddress.objects.filter(client__in=client_ids)
+        return Response(build_client_profile(group, quotations, orders, saved))
+
+    def post(self, request, client_id: str):
+        serializer = ClientAddressSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        group, primary = self._get_primary_or_404(client_id)
+        ClientAddress.objects.create(
+            client=primary,
+            address_line=data["addressLine"],
+            neighborhood=data.get("neighborhood", ""),
+            reference=data.get("reference", ""),
+        )
+        return self._build_response(group)
+
+
+class ClientAddressDetailView(APIView):
+    permission_classes = [IsAdminUser]
+
+    def _get_address_or_404(self, client_id: str, addr_id: int):
+        group = resolve_client_group_by_code(Client.objects.all(), client_id)
+        if not group:
+            raise NotFound("Cliente no encontrado.")
+        client_ids = [c.pk for c in group]
+        try:
+            addr = ClientAddress.objects.get(pk=addr_id, client__in=client_ids)
+        except ClientAddress.DoesNotExist:
+            raise NotFound("Dirección no encontrada.")
+        return group, addr
+
+    def _build_response(self, group):
+        client_ids = [c.pk for c in group]
+        quotations = Quotation.objects.filter(client_id__in=client_ids)
+        orders = Order.objects.select_related("quotation").filter(
+            quotation__client_id__in=client_ids
+        )
+        saved = ClientAddress.objects.filter(client__in=client_ids)
+        return Response(build_client_profile(group, quotations, orders, saved))
+
+    def patch(self, request, client_id: str, addr_id: int):
+        serializer = ClientAddressSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        group, addr = self._get_address_or_404(client_id, addr_id)
+        addr.address_line = data["addressLine"]
+        addr.neighborhood = data.get("neighborhood", "")
+        addr.reference = data.get("reference", "")
+        addr.save()
+        return self._build_response(group)
+
+    def delete(self, request, client_id: str, addr_id: int):
+        group, addr = self._get_address_or_404(client_id, addr_id)
+        addr.delete()
+        return self._build_response(group)
 
 
 class InventoryListCreateView(APIView):

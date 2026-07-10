@@ -234,6 +234,19 @@ class Client(TimestampedModel):
         return f"{self.code} - {self.client_name}"
 
 
+class ClientAddress(TimestampedModel):
+    client = models.ForeignKey(Client, related_name="saved_addresses", on_delete=models.CASCADE)
+    address_line = models.CharField(max_length=220)
+    neighborhood = models.CharField(max_length=120, blank=True, default="")
+    reference = models.CharField(max_length=220, blank=True, default="")
+
+    class Meta:
+        ordering = ("-updated_at",)
+
+    def __str__(self) -> str:
+        return f"{self.client.code} – {self.address_line}"
+
+
 class InventoryProduct(TimestampedModel):
     name = models.CharField(max_length=120)
     name_key = models.CharField(max_length=120, unique=True, editable=False)

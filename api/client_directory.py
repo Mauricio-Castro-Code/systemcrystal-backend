@@ -99,6 +99,7 @@ def build_client_profile(
     group: list[Client],
     quotations: Iterable[Quotation],
     orders: Iterable[Order],
+    saved_addresses: Iterable = (),
 ) -> dict:
     primary_client = select_primary_client(group)
     sorted_clients = sort_clients_by_priority(group)
@@ -122,13 +123,24 @@ def build_client_profile(
         "address": resolve_group_value(group, "address", ""),
         "mergedRecords": len(group),
         "mergedClientCodes": [client.code for client in sorted_clients],
-        "addresses": build_address_history(sorted_clients, sorted_quotations),
+        "addresses": build_address_history(sorted_clients, sorted_quotations, saved_addresses),
         "orderHistory": build_order_history(sorted_orders),
         "prefill": build_client_prefill(sorted_clients, sorted_quotations),
     }
 
 
-def build_address_history(clients: list[Client], quotations: list[Quotation]) -> list[dict]:
+def build_address_history(
+    clients: list[Client],
+    quotations: list[Quotation],
+    saved_addresses: Iterable = (),
+) -> list[dict]:
+    # Índice de direcciones guardadas por clave normalizada
+    saved_map: dict[str, object] = {}
+    for sa in saved_addresses:
+        key = normalize_text(compose_address(sa.address_line, sa.neighborhood))
+        if key:
+            saved_map[key] = sa
+
     addresses: dict[str, dict] = {}
 
     def register_address(
@@ -144,18 +156,21 @@ def build_address_history(clients: list[Client], quotations: list[Quotation]) ->
         if not normalized_key:
             return
 
+        saved = saved_map.get(normalized_key)
         existing_entry = addresses.get(normalized_key)
 
         if existing_entry is None:
             addresses[normalized_key] = {
                 "address": address,
-                "addressLine": address_line,
-                "neighborhood": neighborhood,
-                "reference": reference,
+                "addressLine": saved.address_line if saved else address_line,
+                "neighborhood": saved.neighborhood if saved else neighborhood,
+                "reference": saved.reference if saved else reference,
                 "lastUsedAt": last_used_at,
                 "usageCount": 1,
                 "freight": freight,
                 "freightAt": last_used_at if freight is not None else None,
+                "id": saved.pk if saved else None,
+                "source": "saved" if saved else "quotation",
             }
             return
 
@@ -164,14 +179,21 @@ def build_address_history(clients: list[Client], quotations: list[Quotation]) ->
         if last_used_at > existing_entry["lastUsedAt"]:
             existing_entry["lastUsedAt"] = last_used_at
 
-        if reference and not existing_entry["reference"]:
-            existing_entry["reference"] = reference
-
-        # Si la entrada existente no tiene colonia separada pero la nueva sí, la actualizamos
-        if neighborhood and not existing_entry["neighborhood"]:
-            existing_entry["neighborhood"] = neighborhood
-            if address_line:
-                existing_entry["addressLine"] = address_line
+        # Si hay una dirección guardada que coincide, sus datos tienen prioridad
+        if saved:
+            existing_entry["id"] = saved.pk
+            existing_entry["source"] = "saved"
+            existing_entry["addressLine"] = saved.address_line
+            existing_entry["neighborhood"] = saved.neighborhood
+            if saved.reference:
+                existing_entry["reference"] = saved.reference
+        else:
+            if reference and not existing_entry["reference"]:
+                existing_entry["reference"] = reference
+            if neighborhood and not existing_entry["neighborhood"]:
+                existing_entry["neighborhood"] = neighborhood
+                if address_line:
+                    existing_entry["addressLine"] = address_line
 
         # Actualizar flete con el más reciente que tenga valor
         if freight is not None:
@@ -181,7 +203,6 @@ def build_address_history(clients: list[Client], quotations: list[Quotation]) ->
 
     for client in clients:
         address = str(client.address or "").strip()
-
         if address:
             register_address(address, "", client.updated_at, address_line=address)
 
@@ -200,6 +221,23 @@ def build_address_history(clients: list[Client], quotations: list[Quotation]) ->
                 freight=freight,
             )
 
+    # Agregar direcciones guardadas que no coinciden con ninguna cotización
+    for key, sa in saved_map.items():
+        if key not in addresses:
+            composed = compose_address(sa.address_line, sa.neighborhood)
+            addresses[key] = {
+                "address": composed or sa.address_line,
+                "addressLine": sa.address_line,
+                "neighborhood": sa.neighborhood,
+                "reference": sa.reference,
+                "lastUsedAt": sa.updated_at,
+                "usageCount": 0,
+                "freight": None,
+                "freightAt": None,
+                "id": sa.pk,
+                "source": "saved",
+            }
+
     return [
         {
             "address": entry["address"],
@@ -209,10 +247,16 @@ def build_address_history(clients: list[Client], quotations: list[Quotation]) ->
             "lastUsedAt": entry["lastUsedAt"].isoformat(),
             "usageCount": entry["usageCount"],
             "freight": entry.get("freight"),
+            "id": entry.get("id"),
+            "source": entry.get("source", "quotation"),
         }
         for entry in sorted(
             addresses.values(),
-            key=lambda entry: (entry["lastUsedAt"], entry["address"]),
+            key=lambda e: (
+                1 if e.get("source") == "saved" else 0,
+                e["lastUsedAt"],
+                e["address"],
+            ),
             reverse=True,
         )
     ]

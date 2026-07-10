@@ -2,6 +2,8 @@ from django.urls import path
 
 from .views import (
     AccountingOverviewView,
+    ClientAddressDetailView,
+    ClientAddressListCreateView,
     ClientDetailView,
     ClientListView,
     CurrentSessionView,
@@ -49,6 +51,8 @@ urlpatterns = [
     path("team/<int:user_id>/", TeamMemberDetailView.as_view(), name="team-detail"),
     path("clients/", ClientListView.as_view(), name="client-list"),
     path("clients/<str:client_id>/", ClientDetailView.as_view(), name="client-detail"),
+    path("clients/<str:client_id>/addresses/", ClientAddressListCreateView.as_view(), name="client-address-list"),
+    path("clients/<str:client_id>/addresses/<int:addr_id>/", ClientAddressDetailView.as_view(), name="client-address-detail"),
     path("inventory/", InventoryListCreateView.as_view(), name="inventory-list"),
     path("inventory/<int:product_id>/", InventoryDetailView.as_view(), name="inventory-detail"),
     path("quotations/", QuotationListCreateView.as_view(), name="quotation-list"),

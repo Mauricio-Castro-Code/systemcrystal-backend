@@ -311,3 +311,21 @@ class OrderStatusUpdateSerializer(serializers.Serializer):
 
         attrs["comment"] = str(attrs.get("comment", "")).strip()
         return attrs
+
+
+class ClientCreateSerializer(serializers.Serializer):
+    clientName = serializers.CharField(max_length=120)
+    phoneNumber = serializers.CharField(max_length=25, allow_blank=True, default="")
+    email = serializers.EmailField(allow_blank=True, required=False, default="")
+
+
+class ClientUpdateSerializer(serializers.Serializer):
+    clientName = serializers.CharField(max_length=120, required=False)
+    phoneNumber = serializers.CharField(max_length=25, allow_blank=True, required=False)
+    email = serializers.EmailField(allow_blank=True, required=False)
+
+
+class ClientAddressSerializer(serializers.Serializer):
+    addressLine = serializers.CharField(max_length=220)
+    neighborhood = serializers.CharField(max_length=120, allow_blank=True, default="")
+    reference = serializers.CharField(max_length=220, allow_blank=True, default="")
