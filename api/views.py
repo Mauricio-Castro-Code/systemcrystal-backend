@@ -949,6 +949,20 @@ class OrderCancelView(APIView):
         return Response({"isCancelled": False})
 
 
+class OrderPrintStatusView(APIView):
+    def post(self, request, order_id: str):
+        order = get_object_or_404(get_order_base_queryset(), order_id=order_id)
+        order.printed_at = timezone.now()
+        order.save(update_fields=["printed_at"])
+        return Response({"printedAt": order.printed_at.isoformat()})
+
+    def delete(self, request, order_id: str):
+        order = get_object_or_404(get_order_base_queryset(), order_id=order_id)
+        order.printed_at = None
+        order.save(update_fields=["printed_at"])
+        return Response({"printedAt": None})
+
+
 class OrderRenameView(APIView):
     permission_classes = [IsAdminUser]
 

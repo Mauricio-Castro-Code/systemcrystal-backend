@@ -376,6 +376,7 @@ class Order(TimestampedModel):
         default=BillingStatus.AL_CORRIENTE,
     )
     confirmed_at = models.DateTimeField(default=timezone.now)
+    printed_at = models.DateTimeField(null=True, blank=True)
     is_cancelled = models.BooleanField(default=False)
     assigned_driver = models.ForeignKey(
         settings.AUTH_USER_MODEL,

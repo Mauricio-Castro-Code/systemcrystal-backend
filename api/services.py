@@ -321,6 +321,9 @@ def create_order_from_imported_note(
 @transaction.atomic
 def update_order_from_note(order: Order, note: dict) -> Order:
     apply_note_to_quotation(order.quotation, note)
+    # La nota cambió (cantidades, artículos, etc.): lo impreso ya no coincide.
+    order.printed_at = None
+    order.save(update_fields=["printed_at"])
     return order
 
 

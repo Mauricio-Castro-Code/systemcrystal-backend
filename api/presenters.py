@@ -157,6 +157,7 @@ def build_order_record(order) -> dict:
         "folderKeys": resolve_order_folder_keys(order),
         "folderLabels": resolve_order_folder_labels(order),
         "totalEstimated": quotation.total_estimated,
+        "printedAt": order.printed_at.isoformat() if order.printed_at else None,
         "isCancelled": order.is_cancelled,
         "mapsUrl": order.maps_url or "",
         "officeClosed": order.office_closed,
