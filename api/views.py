@@ -9,6 +9,7 @@ import unicodedata
 from django.conf import settings
 from django.contrib.auth import authenticate, get_user_model
 from django.db import transaction
+from django.db.models import prefetch_related_objects
 from django.http import HttpResponse
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
@@ -880,15 +881,15 @@ class OrderListCreateView(APIView):
         )
 
     def get_queryset(self):
-        orders = list(get_order_base_queryset())
+        # Excluir RECOGIDO en la BD (no en Python) evita traer y prefetchear
+        # miles de notas ya archivadas solo para descartarlas despues.
+        orders = list(
+            get_order_base_queryset().exclude(
+                operational_status=Order.OperationalStatus.RECOGIDO,
+            )
+        )
         folder_key = request_folder_key(self.request)
-
-        filtered_orders = [
-            order
-            for order in orders
-            if order.operational_status != Order.OperationalStatus.RECOGIDO
-        ]
-        return filter_orders_by_folder(filtered_orders, folder_key)
+        return filter_orders_by_folder(orders, folder_key)
 
 
 class OrderArchiveListView(APIView):
@@ -1261,13 +1262,17 @@ class AccountingOverviewView(APIView):
         except ValueError:
             selected_year = today.year
 
+        # equipment_items solo se necesita para el año seleccionado (top
+        # productos/colores/clientes); prefetchearlo para el historico
+        # completo es caro y no se usa fuera de ese subconjunto.
         orders = list(
             Order.objects.select_related("quotation")
-            .prefetch_related("quotation__equipment_items", "extra_costs")
+            .prefetch_related("extra_costs")
             .filter(quotation__total_estimated__gt=0, is_cancelled=False)
         )
 
         year_orders = [o for o in orders if self._order_date(o).year == selected_year]
+        prefetch_related_objects(year_orders, "quotation__equipment_items")
 
         monthly_sales = self._build_monthly_sales(orders, selected_year)
         top_products = self._build_top_products(year_orders)
