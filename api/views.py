@@ -1348,34 +1348,49 @@ class AccountingOverviewView(APIView):
         ]
 
     def _build_top_clients(self, year_orders: list):
+        from .models import normalize_text
+
+        # Agrupamos por nombre normalizado (no por Client.id): la base tiene
+        # clientes duplicados (mismo nombre, distinto registro) por el reset
+        # de notas del 16-jun, y agrupar por FK partia sus notas entre varios
+        # renglones.
         order_counts: dict[str, int] = defaultdict(int)
         revenue_map: dict[str, float] = defaultdict(float)
-        info_map: dict = {}
+        display_name: dict[str, str] = {}
+        client_votes: dict[str, dict[int, int]] = defaultdict(lambda: defaultdict(int))
+        client_codes: dict[int, str] = {}
 
         for order in year_orders:
             quotation = order.quotation
             client = quotation.client
-            key = f"client:{client.id}" if client else f"name:{quotation.client_name.strip().lower()}"
+            raw_name = (client.client_name if client else quotation.client_name) or "Cliente sin nombre"
+            key = normalize_text(raw_name)
 
             order_counts[key] += 1
             revenue_map[key] += float(quotation.total_estimated)
-            info_map.setdefault(key, {
-                "clientId": client.id if client else None,
-                "code": client.code if client else None,
-                "name": client.client_name if client else quotation.client_name,
-            })
+            display_name.setdefault(key, raw_name)
+
+            if client:
+                client_votes[key][client.id] += 1
+                client_codes[client.id] = client.code
 
         # Top 20 por numero de notas, para que el frontend pueda re-ordenar por
         # ventas sin perder clientes frecuentes de baja facturacion.
         top_keys = sorted(order_counts, key=lambda k: order_counts[k], reverse=True)[:20]
-        return [
-            {
-                **info_map[key],
+        result = []
+        for key in top_keys:
+            votes = client_votes.get(key)
+            # Enlazamos al registro de Client mas usado dentro del grupo (puede
+            # haber varios duplicados con el mismo nombre).
+            representative_id = max(votes, key=votes.__getitem__) if votes else None
+            result.append({
+                "clientId": representative_id,
+                "code": client_codes.get(representative_id) if representative_id else None,
+                "name": display_name[key],
                 "orderCount": order_counts[key],
                 "totalSales": round(revenue_map[key], 2),
-            }
-            for key in top_keys
-        ]
+            })
+        return result
 
     # ── Color extraction helpers ──────────────────────────────────────────────
 
