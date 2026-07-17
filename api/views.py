@@ -1272,6 +1272,7 @@ class AccountingOverviewView(APIView):
         monthly_sales = self._build_monthly_sales(orders, selected_year)
         top_products = self._build_top_products(year_orders)
         top_colors = self._build_top_colors(year_orders)
+        top_clients = self._build_top_clients(year_orders)
         summary = self._build_summary(orders, today, selected_year)
         available_years = self._available_years(orders, today)
 
@@ -1283,6 +1284,7 @@ class AccountingOverviewView(APIView):
             "monthlySales": monthly_sales,
             "topProducts": top_products,
             "topColors": top_colors,
+            "topClients": top_clients,
         })
 
     def _order_date(self, order) -> "calendar_date":
@@ -1341,6 +1343,36 @@ class AccountingOverviewView(APIView):
                 "name": display[key],
                 "totalQty": qty_map[key],
                 "totalRevenue": round(rev_map[key], 2),
+            }
+            for key in top_keys
+        ]
+
+    def _build_top_clients(self, year_orders: list):
+        order_counts: dict[str, int] = defaultdict(int)
+        revenue_map: dict[str, float] = defaultdict(float)
+        info_map: dict = {}
+
+        for order in year_orders:
+            quotation = order.quotation
+            client = quotation.client
+            key = f"client:{client.id}" if client else f"name:{quotation.client_name.strip().lower()}"
+
+            order_counts[key] += 1
+            revenue_map[key] += float(quotation.total_estimated)
+            info_map.setdefault(key, {
+                "clientId": client.id if client else None,
+                "code": client.code if client else None,
+                "name": client.client_name if client else quotation.client_name,
+            })
+
+        # Top 20 por numero de notas, para que el frontend pueda re-ordenar por
+        # ventas sin perder clientes frecuentes de baja facturacion.
+        top_keys = sorted(order_counts, key=lambda k: order_counts[k], reverse=True)[:20]
+        return [
+            {
+                **info_map[key],
+                "orderCount": order_counts[key],
+                "totalSales": round(revenue_map[key], 2),
             }
             for key in top_keys
         ]
