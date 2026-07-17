@@ -1247,6 +1247,31 @@ def _normalize_product_key(name: str) -> str:
     return " ".join(words)
 
 
+def _levenshtein_at_most(a: str, b: str, max_dist: int) -> bool:
+    """True si la distancia de edicion entre a y b es <= max_dist.
+
+    Corte temprano por longitud y por fila para que sea barato al comparar
+    muchos pares (solo se usa entre candidatos ya acotados a un top N).
+    """
+    if abs(len(a) - len(b)) > max_dist:
+        return False
+    if a == b:
+        return True
+
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        curr = [i] + [0] * len(b)
+        row_min = curr[0]
+        for j, cb in enumerate(b, 1):
+            cost = 0 if ca == cb else 1
+            curr[j] = min(prev[j] + 1, curr[j - 1] + 1, prev[j - 1] + cost)
+            row_min = min(row_min, curr[j])
+        if row_min > max_dist:
+            return False
+        prev = curr
+    return prev[-1] <= max_dist
+
+
 class AccountingOverviewView(APIView):
     permission_classes = [IsAdminUser]
 
@@ -1335,22 +1360,65 @@ class AccountingOverviewView(APIView):
                 rev_map[key] += float(item.total or 0)
                 name_votes[key][raw] += 1
 
-        # Nombre de display = variante más usada en ese grupo
+        key_to_canonical = self._merge_similar_product_keys(qty_map)
+
+        merged_qty: dict[str, int] = defaultdict(int)
+        merged_rev: dict[str, float] = defaultdict(float)
+        merged_votes: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+        for key, canonical in key_to_canonical.items():
+            merged_qty[canonical] += qty_map[key]
+            merged_rev[canonical] += rev_map[key]
+            for raw, votes in name_votes[key].items():
+                merged_votes[canonical][raw] += votes
+
+        # Nombre de display = variante más usada en ese grupo (ya fusionado)
         display = {
             key: max(votes, key=votes.__getitem__)
-            for key, votes in name_votes.items()
+            for key, votes in merged_votes.items()
         }
 
         # Return 30 sorted by qty so the frontend can re-sort by revenue without missing items
-        top_keys = sorted(qty_map, key=lambda k: qty_map[k], reverse=True)[:30]
+        top_keys = sorted(merged_qty, key=lambda k: merged_qty[k], reverse=True)[:30]
         return [
             {
                 "name": display[key],
-                "totalQty": qty_map[key],
-                "totalRevenue": round(rev_map[key], 2),
+                "totalQty": merged_qty[key],
+                "totalRevenue": round(merged_rev[key], 2),
             }
             for key in top_keys
         ]
+
+    def _merge_similar_product_keys(self, qty_map: dict) -> dict[str, str]:
+        """Mapea cada clave de producto a una clave canonica, fusionando
+        variantes casi-identicas por typos (espacio de mas, letra repetida).
+
+        Solo compara entre los productos con mas cantidad: es O(n^2) pero n
+        se acota para que sea barato en cada request. Las claves fuera de
+        ese grupo (cola larga, poco relevante para un top 30) se mapean a
+        si mismas sin comparar.
+        """
+        candidates = sorted(qty_map, key=lambda k: qty_map[k], reverse=True)[:150]
+
+        canonicals: list[str] = []
+        mapping: dict[str, str] = {}
+        for key in candidates:
+            stripped = key.replace(" ", "")
+            match = None
+            if len(stripped) >= 8:
+                max_dist = 1 if len(stripped) < 15 else 2
+                for canon in canonicals:
+                    if _levenshtein_at_most(stripped, canon.replace(" ", ""), max_dist):
+                        match = canon
+                        break
+            mapping[key] = match or key
+            if not match:
+                canonicals.append(key)
+
+        # Claves fuera del top de candidatos: sin fusionar, tal cual.
+        for key in qty_map:
+            mapping.setdefault(key, key)
+
+        return mapping
 
     def _build_top_clients(self, year_orders: list):
         from .models import normalize_text
