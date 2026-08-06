@@ -8,6 +8,7 @@ import unicodedata
 
 from django.conf import settings
 from django.contrib.auth import authenticate, get_user_model
+from django.core.cache import cache
 from django.db import transaction
 from django.db.models import prefetch_related_objects
 from django.http import HttpResponse
@@ -1278,6 +1279,12 @@ class AccountingOverviewView(APIView):
     MONTH_NAMES = ["Ene", "Feb", "Mar", "Abr", "May", "Jun",
                    "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"]
 
+    # El calculo recorre el historico completo de ordenes (matching de
+    # productos/colores por texto libre, no se puede resolver con un
+    # agregado de SQL), por lo que se cachea por año seleccionado en vez
+    # de recalcularlo en cada carga de la pestaña de contabilidad.
+    CACHE_TTL_SECONDS = 300
+
     def get(self, request):
         today = timezone.localdate()
 
@@ -1287,11 +1294,16 @@ class AccountingOverviewView(APIView):
         except ValueError:
             selected_year = today.year
 
+        cache_key = f"accounting_overview:{selected_year}"
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return Response(cached)
+
         # equipment_items solo se necesita para el año seleccionado (top
         # productos/colores/clientes); prefetchearlo para el historico
         # completo es caro y no se usa fuera de ese subconjunto.
         orders = list(
-            Order.objects.select_related("quotation")
+            Order.objects.select_related("quotation", "quotation__client")
             .prefetch_related("extra_costs")
             .filter(quotation__total_estimated__gt=0, is_cancelled=False)
         )
@@ -1306,7 +1318,7 @@ class AccountingOverviewView(APIView):
         summary = self._build_summary(orders, today, selected_year)
         available_years = self._available_years(orders, today)
 
-        return Response({
+        payload = {
             "generatedAt": timezone.localtime().isoformat(),
             "selectedYear": selected_year,
             "availableYears": available_years,
@@ -1315,7 +1327,9 @@ class AccountingOverviewView(APIView):
             "topProducts": top_products,
             "topColors": top_colors,
             "topClients": top_clients,
-        })
+        }
+        cache.set(cache_key, payload, self.CACHE_TTL_SECONDS)
+        return Response(payload)
 
     def _order_date(self, order) -> "calendar_date":
         return order.quotation.event_date or order.confirmed_at.date()
