@@ -261,3 +261,9 @@ GOOGLE_MAPS_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY", "").strip()
 
 # Dirección de salida (bodega) usada como origen para optimizar la ruta del chofer.
 DRIVER_ROUTE_START_ADDRESS = os.getenv("DRIVER_ROUTE_START_ADDRESS", "").strip()
+
+# Ciudad/estado que se agrega a las direcciones de las notas antes de mandarlas
+# a Google Maps si no la traen ya. Las notas casi nunca incluyen ciudad/estado
+# (solo calle + colonia), y sin ese dato Google no geocodifica aunque la calle
+# esté bien escrita.
+DRIVER_ROUTE_DEFAULT_LOCALITY = os.getenv("DRIVER_ROUTE_DEFAULT_LOCALITY", "Puebla, Pue.").strip()

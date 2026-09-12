@@ -245,9 +245,23 @@ def assign_order_driver(
 
 
 def _order_stop_address(order: Order) -> str:
+    """Dirección de una parada, lista para mandarse a Google Maps.
+
+    Las notas rara vez incluyen ciudad/estado (solo calle + colonia), y sin
+    esos datos Google no logra geocodificar aunque la calle esté bien escrita
+    (confirmado con casos reales: agregar ", Puebla, Pue." resolvió direcciones
+    que fallaban tal cual). Por eso se agrega automáticamente si falta.
+    """
     quotation = order.quotation
     address_parts = [quotation.address, quotation.neighborhood]
-    return ", ".join(part for part in address_parts if part) or ""
+    address = ", ".join(part for part in address_parts if part)
+    if not address:
+        return ""
+
+    locality = settings.DRIVER_ROUTE_DEFAULT_LOCALITY
+    if locality and locality.split(",")[0].strip().lower() not in address.lower():
+        address = f"{address}, {locality}"
+    return address
 
 
 @transaction.atomic
