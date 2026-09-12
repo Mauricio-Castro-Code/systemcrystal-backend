@@ -33,6 +33,14 @@ MATRIX_CACHE_TTL_SECONDS = 300
 # Tiempo que el chofer tarda en cada parada (carga/descarga/firma) antes de partir a la siguiente.
 STOP_SERVICE_MINUTES = 15
 
+# Distancia máxima plausible (en línea de conducción) desde la bodega para una
+# parada normal del día. Direcciones ambiguas ("Barrio de San Juan" existe en
+# más de un municipio de Puebla, por ejemplo) a veces geocodifican a un lugar
+# real y con ruta válida, pero a decenas de km del correcto -- Google no lo
+# reporta como error porque técnicamente sí hay camino. Este límite atrapa
+# ese caso en vez de inflar la ruta del día en silencio.
+MAX_PLAUSIBLE_DISTANCE_KM = 60
+
 # Hora de salida por defecto cuando ninguna parada trae una ventana que la determine.
 DEFAULT_DAY_START = datetime.time(8, 0)
 
@@ -236,6 +244,20 @@ def fetch_route_matrix(origin_address: str, stop_addresses: list[str]) -> list[l
         broken_addresses = [stop_addresses[index - 1] for index in broken_indices] or stop_addresses
         logger.warning("Direcciones sin ruta en Google Maps: %s", broken_addresses)
         raise UnroutableStopsError(broken_addresses)
+
+    implausible_indices = [
+        index
+        for index in range(1, size)
+        if matrix[0][index]["distanceKm"] > MAX_PLAUSIBLE_DISTANCE_KM
+        or matrix[index][0]["distanceKm"] > MAX_PLAUSIBLE_DISTANCE_KM
+    ]
+    if implausible_indices:
+        implausible_addresses = [stop_addresses[index - 1] for index in implausible_indices]
+        logger.warning(
+            "Direcciones geocodificadas a un lugar implausiblemente lejano: %s",
+            implausible_addresses,
+        )
+        raise UnroutableStopsError(implausible_addresses)
 
     cache.set(cache_key, matrix, MATRIX_CACHE_TTL_SECONDS)
     return matrix

@@ -226,3 +226,21 @@ class FetchRouteMatrixTests(SimpleTestCase):
             ro.fetch_route_matrix("Bodega", ["Calle A", "Calle B rota"])
 
         self.assertEqual(ctx.exception.addresses, ["Calle B rota"])
+
+    @override_settings(GOOGLE_MAPS_API_KEY="test-key")
+    @patch("api.route_optimization.requests.post")
+    def test_rejects_stop_geocoded_implausibly_far(self, mock_post):
+        # Google sí encuentra ruta hacia la parada ambigua, pero está a 150km:
+        # un caso real (una colonia con el mismo nombre en otro municipio).
+        rows = [
+            {"destinationIndex": 0, "duration": "0s", "distanceMeters": 0, "condition": "ROUTE_EXISTS"},
+            {"destinationIndex": 1, "duration": "36000s", "distanceMeters": 150_000, "condition": "ROUTE_EXISTS"},
+            {"originIndex": 1, "destinationIndex": 0, "duration": "36000s", "distanceMeters": 150_000, "condition": "ROUTE_EXISTS"},
+            {"originIndex": 1, "destinationIndex": 1, "duration": "0s", "distanceMeters": 0, "condition": "ROUTE_EXISTS"},
+        ]
+        mock_post.return_value = MagicMock(status_code=200, json=lambda: rows)
+
+        with self.assertRaises(ro.UnroutableStopsError) as ctx:
+            ro.fetch_route_matrix("Bodega", ["Barrio de San Juan, otro municipio"])
+
+        self.assertEqual(ctx.exception.addresses, ["Barrio de San Juan, otro municipio"])
