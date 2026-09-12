@@ -290,21 +290,28 @@ def clear_order_route_constraint(order: Order) -> None:
     OrderRouteConstraint.objects.filter(order=order).delete()
 
 
-def run_route_optimization(driver, route_date, orders: list[Order]) -> RouteOptimizationRun | None:
+def run_route_optimization(driver, route_date, orders: list[Order]) -> RouteOptimizationRun:
     """Optimiza la ruta del día de un chofer y persiste el resultado.
 
-    Devuelve None si no hay dirección de bodega configurada, no hay paradas, o Google
-    Maps no pudo calcular la matriz de tiempos reales (sin eso no hay optimización posible).
+    Lanza `RouteEngineError` con un mensaje accionable si falta configuración,
+    alguna parada no tiene dirección, o el motor de mapas no pudo responder.
     """
     origin_address = settings.DRIVER_ROUTE_START_ADDRESS
-    stop_addresses = [_order_stop_address(order) for order in orders]
 
-    if not orders or not origin_address or any(not address for address in stop_addresses):
-        return None
+    if not origin_address:
+        raise route_optimization.RouteEngineError(
+            "Falta configurar la dirección de salida (DRIVER_ROUTE_START_ADDRESS) en el servidor."
+        )
+
+    stop_addresses = [_order_stop_address(order) for order in orders]
+    missing = [order.order_id for order, address in zip(orders, stop_addresses) if not address]
+
+    if missing:
+        raise route_optimization.RouteEngineError(
+            "Estas notas no tienen dirección capturada: " + ", ".join(missing)
+        )
 
     matrix = route_optimization.fetch_route_matrix(origin_address, stop_addresses)
-    if matrix is None:
-        return None
 
     stop_inputs = []
     for order, address in zip(orders, stop_addresses):

@@ -36,6 +36,10 @@ LATE_PENALTY_MINUTES = 240
 PRIORITY_BONUS_MINUTES = {"ALTA": -30, "NORMAL": 0, "BAJA": 15}
 
 
+class RouteEngineError(Exception):
+    """No se pudo calcular la ruta; el mensaje explica qué falta corregir."""
+
+
 @dataclass(frozen=True)
 class RouteStopInput:
     order_id: str
@@ -128,17 +132,17 @@ def _parse_hhmm(value) -> datetime.time | None:
         return None
 
 
-def fetch_route_matrix(
-    origin_address: str, stop_addresses: list[str]
-) -> list[list[dict]] | None:
+def fetch_route_matrix(origin_address: str, stop_addresses: list[str]) -> list[list[dict]]:
     """Matriz real de tiempos/distancias entre la bodega y cada parada (Google Routes API).
 
     Devuelve una matriz (n+1)x(n+1): índice 0 es el origen, 1..n son `stop_addresses` en el
     mismo orden recibido. Cada celda es {"durationMinutes": float, "distanceKm": float}.
-    Devuelve None si la API no está configurada o falla — sin datos reales no hay optimización.
+    Lanza `RouteEngineError` si no se puede obtener — sin tiempos reales no hay optimización.
     """
-    if not settings.GOOGLE_MAPS_API_KEY or not origin_address or not stop_addresses:
-        return None
+    if not settings.GOOGLE_MAPS_API_KEY:
+        raise RouteEngineError(
+            "Falta configurar GOOGLE_MAPS_API_KEY en el servidor para calcular la ruta."
+        )
 
     waypoints = [{"waypoint": {"address": origin_address}}] + [
         {"waypoint": {"address": address}} for address in stop_addresses
@@ -158,11 +162,20 @@ def fetch_route_matrix(
 
     try:
         response = requests.post(ROUTES_MATRIX_URL, json=payload, headers=headers, timeout=20)
-        response.raise_for_status()
+    except requests.RequestException as error:
+        logger.exception("No se pudo contactar a Google Maps.")
+        raise RouteEngineError("No se pudo contactar al servicio de mapas.") from error
+
+    if response.status_code != 200:
+        detail = _describe_google_error(response)
+        logger.error("Google Routes API respondió %s: %s", response.status_code, response.text)
+        raise RouteEngineError(f"El servicio de mapas rechazó la solicitud: {detail}")
+
+    try:
         rows = response.json()
-    except (requests.RequestException, ValueError):
-        logger.exception("No se pudo calcular la matriz de rutas con Google Maps.")
-        return None
+    except ValueError as error:
+        logger.exception("Respuesta ilegible de Google Maps.")
+        raise RouteEngineError("El servicio de mapas devolvió una respuesta inesperada.") from error
 
     size = len(waypoints)
     matrix: list[list[dict | None]] = [[None] * size for _ in range(size)]
@@ -183,9 +196,27 @@ def fetch_route_matrix(
 
     if any(cell is None for row in matrix for cell in row):
         logger.warning("La matriz de Google Maps quedó incompleta; se descarta la optimización.")
-        return None
+        raise RouteEngineError(
+            "El mapa no pudo trazar la ruta entre todas las paradas. "
+            "Revisa que las direcciones sean localizables."
+        )
 
     return matrix
+
+
+def _describe_google_error(response) -> str:
+    """Extrae el mensaje legible del error que devuelve la Routes API."""
+    try:
+        payload = response.json()
+    except ValueError:
+        return f"HTTP {response.status_code}"
+
+    # La API puede responder un objeto o una lista de errores.
+    if isinstance(payload, list):
+        payload = payload[0] if payload else {}
+
+    message = (payload.get("error") or {}).get("message") if isinstance(payload, dict) else None
+    return message or f"HTTP {response.status_code}"
 
 
 def optimize_stops(

@@ -85,6 +85,7 @@ from .models import (
     set_user_role,
 )
 from .note_import import NoteImportError, read_note_excel
+from .route_optimization import RouteEngineError
 from .presenters import (
     build_dashboard_overview,
     build_driver_route,
@@ -1211,14 +1212,15 @@ class DriverRouteOptimizeView(APIView):
         )
 
         if not orders:
-            raise ValidationError("No tienes pedidos pendientes para optimizar hoy.")
-
-        run = run_route_optimization(request.user, route_date, orders)
-        if run is None:
-            raise ValidationError(
-                "No se pudo calcular la ruta. Revisa que todas las paradas tengan "
-                "dirección y que el servicio de mapas esté disponible."
+            return Response(
+                {"detail": "No tienes pedidos pendientes para optimizar hoy."},
+                status=status.HTTP_400_BAD_REQUEST,
             )
+
+        try:
+            run = run_route_optimization(request.user, route_date, orders)
+        except RouteEngineError as error:
+            return Response({"detail": str(error)}, status=status.HTTP_400_BAD_REQUEST)
 
         sequence_by_order_id = {stop["orderId"]: stop["sequence"] for stop in run.stops}
         unsequenced_rank = len(sequence_by_order_id) + 1

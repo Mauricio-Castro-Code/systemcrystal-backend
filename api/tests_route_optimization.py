@@ -136,8 +136,22 @@ class FetchRouteMatrixTests(SimpleTestCase):
     databases = set()
 
     @override_settings(GOOGLE_MAPS_API_KEY="")
-    def test_returns_none_without_api_key(self):
-        self.assertIsNone(ro.fetch_route_matrix("Bodega", ["Calle A"]))
+    def test_raises_without_api_key(self):
+        with self.assertRaises(ro.RouteEngineError):
+            ro.fetch_route_matrix("Bodega", ["Calle A"])
+
+    @override_settings(GOOGLE_MAPS_API_KEY="test-key")
+    @patch("api.route_optimization.requests.post")
+    def test_surfaces_google_error_message(self, mock_post):
+        error_body = [
+            {"error": {"code": 403, "message": "Routes API has not been used in project 123"}}
+        ]
+        mock_post.return_value = MagicMock(status_code=403, json=lambda: error_body, text="403")
+
+        with self.assertRaises(ro.RouteEngineError) as ctx:
+            ro.fetch_route_matrix("Bodega", ["Calle A"])
+
+        self.assertIn("Routes API has not been used", str(ctx.exception))
 
     @override_settings(GOOGLE_MAPS_API_KEY="test-key")
     @patch("api.route_optimization.requests.post")
@@ -149,23 +163,21 @@ class FetchRouteMatrixTests(SimpleTestCase):
             {"originIndex": 1, "destinationIndex": 0, "duration": "600s", "distanceMeters": 5000, "condition": "ROUTE_EXISTS"},
             {"originIndex": 1, "destinationIndex": 1, "duration": "0s", "distanceMeters": 0, "condition": "ROUTE_EXISTS"},
         ]
-        mock_post.return_value = MagicMock(json=lambda: rows, raise_for_status=lambda: None)
+        mock_post.return_value = MagicMock(status_code=200, json=lambda: rows)
 
         matrix = ro.fetch_route_matrix("Bodega", ["Calle A"])
 
-        self.assertIsNotNone(matrix)
         self.assertEqual(matrix[0][1]["durationMinutes"], 10)
         self.assertEqual(matrix[0][1]["distanceKm"], 5)
         self.assertEqual(matrix[1][0]["durationMinutes"], 10)
 
     @override_settings(GOOGLE_MAPS_API_KEY="test-key")
     @patch("api.route_optimization.requests.post")
-    def test_returns_none_when_matrix_incomplete(self, mock_post):
+    def test_raises_when_matrix_incomplete(self, mock_post):
         rows = [
             {"destinationIndex": 1, "duration": "600s", "distanceMeters": 5000, "condition": "ROUTE_EXISTS"},
         ]
-        mock_post.return_value = MagicMock(json=lambda: rows, raise_for_status=lambda: None)
+        mock_post.return_value = MagicMock(status_code=200, json=lambda: rows)
 
-        matrix = ro.fetch_route_matrix("Bodega", ["Calle A"])
-
-        self.assertIsNone(matrix)
+        with self.assertRaises(ro.RouteEngineError):
+            ro.fetch_route_matrix("Bodega", ["Calle A"])
