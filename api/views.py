@@ -78,6 +78,7 @@ from .models import (
     OrderExtraCost,
     Quotation,
     QuotationItem,
+    RouteOptimizationRun,
     UserProfile,
     get_user_role,
     order_folio_options,
@@ -87,6 +88,7 @@ from .note_import import NoteImportError, read_note_excel
 from .presenters import (
     build_dashboard_overview,
     build_driver_route,
+    build_driver_route_stop,
     build_order_record,
     build_quotation_record,
     build_team_member,
@@ -96,10 +98,12 @@ from .serializers import (
     ClientAddressSerializer,
     ClientCreateSerializer,
     ClientUpdateSerializer,
+    DriverRouteAddOrderSerializer,
     InventoryItemSerializer,
     LoginSerializer,
     OrderAssignmentSerializer,
     OrderExtraCostSerializer,
+    OrderRouteConstraintSerializer,
     OrderStatusUpdateSerializer,
     QuotationNoteSerializer,
     RegisterSerializer,
@@ -108,11 +112,14 @@ from .serializers import (
 )
 from .services import (
     assign_order_driver,
+    clear_order_route_constraint,
     confirm_quotation_as_order,
     create_order_from_imported_note,
     create_order_from_note,
     create_quotation_from_note,
     delete_order_and_quotation,
+    run_route_optimization,
+    set_order_route_constraint,
     update_order_statuses,
     update_order_from_note,
     update_quotation_from_note,
@@ -1147,7 +1154,7 @@ class DriverRouteView(APIView):
             if date_filter is None:
                 raise ValidationError({"date": "Formato de fecha inválido (YYYY-MM-DD)."})
 
-        base = get_order_base_queryset().filter(
+        base = get_order_base_queryset().select_related("route_constraint").filter(
             assigned_driver_id=request.user.id,
             is_cancelled=False,
         )
@@ -1168,7 +1175,102 @@ class DriverRouteView(APIView):
             key=lambda o: (o.quotation.delivery_date is None, o.quotation.delivery_date or route_date)
         )
 
-        return Response(build_driver_route(orders, route_date))
+        # Si ya se optimizó la ruta de este día, respetamos ese orden; los pedidos
+        # agregados después de la última optimización quedan al final (sin ETA todavía).
+        run = RouteOptimizationRun.objects.filter(
+            driver_id=request.user.id, route_date=route_date
+        ).first()
+        if run is not None:
+            sequence_by_order_id = {stop["orderId"]: stop["sequence"] for stop in run.stops}
+            unsequenced_rank = len(sequence_by_order_id) + 1
+            orders.sort(key=lambda o: sequence_by_order_id.get(o.order_id, unsequenced_rank))
+
+        return Response(build_driver_route(orders, route_date, run))
+
+
+class DriverRouteOptimizeView(APIView):
+    """Recalcula el orden de la ruta del chofer autenticado usando Google Maps + IA."""
+
+    permission_classes = [IsChofer]
+
+    def post(self, request):
+        route_date = timezone.localdate()
+        orders = list(
+            get_order_base_queryset()
+            .select_related("route_constraint")
+            .filter(
+                assigned_driver_id=request.user.id,
+                is_cancelled=False,
+            )
+            .exclude(operational_status=Order.OperationalStatus.RECOGIDO)
+        )
+
+        if not orders:
+            raise ValidationError("No tienes pedidos pendientes para optimizar hoy.")
+
+        run = run_route_optimization(request.user, route_date, orders)
+        if run is None:
+            raise ValidationError(
+                "No se pudo calcular la ruta. Revisa que todas las paradas tengan "
+                "dirección y que el servicio de mapas esté disponible."
+            )
+
+        sequence_by_order_id = {stop["orderId"]: stop["sequence"] for stop in run.stops}
+        unsequenced_rank = len(sequence_by_order_id) + 1
+        orders.sort(key=lambda o: sequence_by_order_id.get(o.order_id, unsequenced_rank))
+
+        return Response(build_driver_route(orders, route_date, run))
+
+
+class OrderRouteConstraintView(APIView):
+    """Restricción operativa que el chofer agrega a una de sus paradas."""
+
+    permission_classes = [IsChofer]
+
+    def _get_owned_order(self, request, order_id):
+        order = get_object_or_404(Order.objects.select_related("quotation"), order_id=order_id)
+        if order.assigned_driver_id != request.user.id:
+            raise PermissionDenied("Este pedido no está asignado a tu ruta.")
+        return order
+
+    def post(self, request, order_id):
+        order = self._get_owned_order(request, order_id)
+        serializer = OrderRouteConstraintSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        set_order_route_constraint(
+            order,
+            time_window_start=serializer.validated_data.get("timeWindowStart"),
+            time_window_end=serializer.validated_data.get("timeWindowEnd"),
+            priority=serializer.validated_data.get("priority"),
+            raw_note=serializer.validated_data.get("note", ""),
+            changed_by=request.user,
+        )
+
+        return Response(build_driver_route_stop(order))
+
+    def delete(self, request, order_id):
+        order = self._get_owned_order(request, order_id)
+        clear_order_route_constraint(order)
+        return Response(build_driver_route_stop(order))
+
+
+class DriverRouteAddOrderView(APIView):
+    """Permite al chofer agregar un pedido puntual (por folio exacto) a su jornada."""
+
+    permission_classes = [IsChofer]
+
+    def post(self, request):
+        serializer = DriverRouteAddOrderSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        order_id = serializer.validated_data["orderId"]
+
+        order = get_object_or_404(Order.objects.select_related("quotation"), order_id=order_id)
+        if order.is_cancelled or order.operational_status == Order.OperationalStatus.RECOGIDO:
+            raise ValidationError("Ese pedido ya no está activo.")
+
+        assign_order_driver(order, driver=request.user, changed_by=request.user)
+        return Response(build_driver_route_stop(order))
 
 
 class OrderBulkStatusUpdateView(APIView):

@@ -254,3 +254,10 @@ DOCUMENT_RENDER_TIMEOUT_SECONDS = get_int(
     "DOCUMENT_RENDER_TIMEOUT_SECONDS",
     120,
 )
+
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
+
+GOOGLE_MAPS_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY", "").strip()
+
+# Dirección de salida (bodega) usada como origen para optimizar la ruta del chofer.
+DRIVER_ROUTE_START_ADDRESS = os.getenv("DRIVER_ROUTE_START_ADDRESS", "").strip()

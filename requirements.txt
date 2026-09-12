@@ -8,3 +8,5 @@ pillow==10.4.0
 fpdf2==2.7.9
 gunicorn==22.0.0
 whitenoise==6.8.2
+openai==3.13.0
+requests==2.34.2

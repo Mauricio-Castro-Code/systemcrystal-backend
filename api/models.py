@@ -476,6 +476,67 @@ class OrderWorkflowEvent(TimestampedModel):
         return f"{self.order.order_id} {self.category} -> {self.to_status}"
 
 
+class OrderRouteConstraint(TimestampedModel):
+    """Restricción operativa que el chofer agrega a una parada de su ruta."""
+
+    class Priority(models.TextChoices):
+        ALTA = "ALTA", "Alta"
+        NORMAL = "NORMAL", "Normal"
+        BAJA = "BAJA", "Baja"
+
+    order = models.OneToOneField(
+        Order,
+        related_name="route_constraint",
+        on_delete=models.CASCADE,
+    )
+    time_window_start = models.TimeField(null=True, blank=True)
+    time_window_end = models.TimeField(null=True, blank=True)
+    priority = models.CharField(
+        max_length=10,
+        choices=Priority.choices,
+        default=Priority.NORMAL,
+    )
+    raw_note = models.TextField(blank=True)
+    parsed_by_ai = models.BooleanField(default=False)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        related_name="route_constraints",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+    )
+
+    def __str__(self) -> str:
+        return f"Restricción {self.order.order_id}"
+
+
+class RouteOptimizationRun(TimestampedModel):
+    """Último resultado de optimización de ruta calculado para un chofer y fecha."""
+
+    driver = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        related_name="route_optimization_runs",
+        on_delete=models.CASCADE,
+    )
+    route_date = models.DateField()
+    recommended_departure = models.TimeField(null=True, blank=True)
+    first_stop_eta = models.TimeField(null=True, blank=True)
+    total_duration_minutes = models.PositiveIntegerField(default=0)
+    total_distance_km = models.DecimalField(max_digits=8, decimal_places=2, default=0)
+    # Lista ordenada: [{"orderId", "sequence", "eta", "distanceFromPreviousKm", "alert"}, ...]
+    stops = models.JSONField(default=list, blank=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["driver", "route_date"], name="unique_route_optimization_per_driver_day"
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"Ruta {self.driver_id} {self.route_date.isoformat()}"
+
+
 class UserProfile(TimestampedModel):
     class Role(models.TextChoices):
         ADMIN = "admin", "Administrador"

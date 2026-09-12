@@ -415,7 +415,7 @@ def build_driver_summary(user) -> dict | None:
     }
 
 
-def build_driver_route_stop(order) -> dict:
+def build_driver_route_stop(order, run_stop: dict | None = None) -> dict:
     """Una parada de la ruta del chofer. Sin precios: solo qué y a dónde."""
     quotation = order.quotation
     address_parts = [quotation.address, quotation.neighborhood]
@@ -425,6 +425,9 @@ def build_driver_route_stop(order) -> dict:
         {"quantity": item.quantity, "equipment": item.equipment}
         for item in quotation.equipment_items.all()
     ]
+
+    constraint = getattr(order, "route_constraint", None)
+    run_stop = run_stop or {}
 
     return {
         "orderId": order.order_id,
@@ -442,6 +445,32 @@ def build_driver_route_stop(order) -> dict:
         ),
         "itemsCount": len(items),
         "items": items,
+        "timeWindowStart": constraint.time_window_start.strftime("%H:%M")
+        if constraint and constraint.time_window_start
+        else None,
+        "timeWindowEnd": constraint.time_window_end.strftime("%H:%M")
+        if constraint and constraint.time_window_end
+        else None,
+        "priority": constraint.priority if constraint else "NORMAL",
+        "restrictionNote": constraint.raw_note if constraint else "",
+        "sequence": run_stop.get("sequence"),
+        "eta": run_stop.get("eta"),
+        "routeAlert": run_stop.get("alert"),
+    }
+
+
+def build_route_summary(run) -> dict | None:
+    """Resumen de la última optimización de ruta calculada para un chofer y fecha."""
+    if run is None:
+        return None
+
+    return {
+        "recommendedDeparture": run.recommended_departure.strftime("%H:%M")
+        if run.recommended_departure
+        else None,
+        "firstStopEta": run.first_stop_eta.strftime("%H:%M") if run.first_stop_eta else None,
+        "totalDurationMinutes": run.total_duration_minutes,
+        "totalDistanceKm": float(run.total_distance_km),
     }
 
 
@@ -452,9 +481,13 @@ DRIVER_PENDING_STATUSES = (
 )
 
 
-def build_driver_route(orders, route_date) -> dict:
+def build_driver_route(orders, route_date, run=None) -> dict:
     """Construye la vista 'Mi Ruta' del chofer para una fecha dada."""
-    stops = [build_driver_route_stop(order) for order in orders]
+    run_stops_by_order_id = {stop["orderId"]: stop for stop in run.stops} if run else {}
+    stops = [
+        build_driver_route_stop(order, run_stops_by_order_id.get(order.order_id))
+        for order in orders
+    ]
     total = len(stops)
     completed = sum(
         1
@@ -470,4 +503,5 @@ def build_driver_route(orders, route_date) -> dict:
         "completed": completed,
         "pending": pending,
         "stops": stops,
+        "summary": build_route_summary(run),
     }

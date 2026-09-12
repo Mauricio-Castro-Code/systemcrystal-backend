@@ -1,13 +1,19 @@
 from __future__ import annotations
 
+import datetime
+
+from django.conf import settings
 from django.db import transaction
 
+from . import route_optimization
 from .models import (
     Client,
     Order,
+    OrderRouteConstraint,
     OrderWorkflowEvent,
     Quotation,
     QuotationItem,
+    RouteOptimizationRun,
     normalize_text,
     only_digits,
 )
@@ -236,6 +242,107 @@ def assign_order_driver(
         order.save(update_fields=update_fields)
 
     return order
+
+
+def _order_stop_address(order: Order) -> str:
+    quotation = order.quotation
+    address_parts = [quotation.address, quotation.neighborhood]
+    return ", ".join(part for part in address_parts if part) or ""
+
+
+@transaction.atomic
+def set_order_route_constraint(
+    order: Order,
+    *,
+    time_window_start: datetime.time | None = None,
+    time_window_end: datetime.time | None = None,
+    priority: str | None = None,
+    raw_note: str = "",
+    changed_by=None,
+) -> OrderRouteConstraint:
+    """Guarda la restricción operativa que el chofer agrega a una parada.
+
+    Si viene una nota libre y no se especificaron ventana/prioridad explícitas, se le
+    pide a la IA que la interprete (nunca calcula tiempos de viaje, solo estructura texto).
+    """
+    normalized_note = str(raw_note or "").strip()
+    parsed_by_ai = False
+
+    if normalized_note and time_window_start is None and time_window_end is None and priority is None:
+        parsed = route_optimization.parse_constraint_from_text(normalized_note)
+        time_window_start = parsed.get("time_window_start")
+        time_window_end = parsed.get("time_window_end")
+        priority = parsed.get("priority")
+        parsed_by_ai = bool(parsed)
+
+    constraint, _ = OrderRouteConstraint.objects.get_or_create(order=order)
+    constraint.time_window_start = time_window_start
+    constraint.time_window_end = time_window_end
+    constraint.priority = priority or OrderRouteConstraint.Priority.NORMAL
+    constraint.raw_note = normalized_note
+    constraint.parsed_by_ai = parsed_by_ai
+    constraint.created_by = changed_by if getattr(changed_by, "pk", None) else None
+    constraint.save()
+    return constraint
+
+
+def clear_order_route_constraint(order: Order) -> None:
+    OrderRouteConstraint.objects.filter(order=order).delete()
+
+
+def run_route_optimization(driver, route_date, orders: list[Order]) -> RouteOptimizationRun | None:
+    """Optimiza la ruta del día de un chofer y persiste el resultado.
+
+    Devuelve None si no hay dirección de bodega configurada, no hay paradas, o Google
+    Maps no pudo calcular la matriz de tiempos reales (sin eso no hay optimización posible).
+    """
+    origin_address = settings.DRIVER_ROUTE_START_ADDRESS
+    stop_addresses = [_order_stop_address(order) for order in orders]
+
+    if not orders or not origin_address or any(not address for address in stop_addresses):
+        return None
+
+    matrix = route_optimization.fetch_route_matrix(origin_address, stop_addresses)
+    if matrix is None:
+        return None
+
+    stop_inputs = []
+    for order, address in zip(orders, stop_addresses):
+        constraint = getattr(order, "route_constraint", None)
+        stop_inputs.append(
+            route_optimization.RouteStopInput(
+                order_id=order.order_id,
+                address=address,
+                time_window_start=constraint.time_window_start if constraint else None,
+                time_window_end=constraint.time_window_end if constraint else None,
+                priority=constraint.priority if constraint else OrderRouteConstraint.Priority.NORMAL,
+            )
+        )
+
+    result = route_optimization.optimize_stops(stop_inputs, matrix)
+
+    recommended_departure = _parse_hhmm_or_none(result["recommendedDeparture"])
+    first_stop_eta = _parse_hhmm_or_none(result["firstStopEta"])
+
+    run, _ = RouteOptimizationRun.objects.update_or_create(
+        driver=driver,
+        route_date=route_date,
+        defaults={
+            "recommended_departure": recommended_departure,
+            "first_stop_eta": first_stop_eta,
+            "total_duration_minutes": result["totalDurationMinutes"],
+            "total_distance_km": result["totalDistanceKm"],
+            "stops": result["stops"],
+        },
+    )
+    return run
+
+
+def _parse_hhmm_or_none(value: str | None) -> datetime.time | None:
+    if not value:
+        return None
+    hours, minutes = value.split(":")
+    return datetime.time(int(hours), int(minutes))
 
 
 @transaction.atomic

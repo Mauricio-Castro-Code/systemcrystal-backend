@@ -4,7 +4,7 @@ from decimal import Decimal, ROUND_HALF_UP
 
 from rest_framework import serializers
 
-from .models import Client, InventoryProduct, Order, UserProfile, normalize_text
+from .models import Client, InventoryProduct, Order, OrderRouteConstraint, UserProfile, normalize_text
 
 
 TWO_DECIMAL_PLACES = Decimal("0.01")
@@ -311,6 +311,33 @@ class OrderStatusUpdateSerializer(serializers.Serializer):
 
         attrs["comment"] = str(attrs.get("comment", "")).strip()
         return attrs
+
+
+class OrderRouteConstraintSerializer(serializers.Serializer):
+    timeWindowStart = serializers.TimeField(required=False, allow_null=True)
+    timeWindowEnd = serializers.TimeField(required=False, allow_null=True)
+    priority = serializers.ChoiceField(
+        choices=OrderRouteConstraint.Priority.choices,
+        required=False,
+        allow_null=True,
+    )
+    note = serializers.CharField(max_length=500, required=False, allow_blank=True, default="")
+
+    def validate(self, attrs):
+        if (
+            "timeWindowStart" not in attrs
+            and "timeWindowEnd" not in attrs
+            and "priority" not in attrs
+            and not attrs.get("note")
+        ):
+            raise serializers.ValidationError(
+                "Debes enviar una ventana, prioridad o nota para la restricción.",
+            )
+        return attrs
+
+
+class DriverRouteAddOrderSerializer(serializers.Serializer):
+    orderId = serializers.CharField(max_length=20)
 
 
 class ClientCreateSerializer(serializers.Serializer):
