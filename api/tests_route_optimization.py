@@ -181,3 +181,25 @@ class FetchRouteMatrixTests(SimpleTestCase):
 
         with self.assertRaises(ro.RouteEngineError):
             ro.fetch_route_matrix("Bodega", ["Calle A"])
+
+    @override_settings(GOOGLE_MAPS_API_KEY="test-key")
+    @patch("api.route_optimization.requests.post")
+    def test_names_the_specific_unroutable_address(self, mock_post):
+        # 3 puntos: bodega(0), A(1) con ruta normal, B(2) sin conexión con nada.
+        rows = [
+            {"destinationIndex": 0, "duration": "0s", "distanceMeters": 0, "condition": "ROUTE_EXISTS"},
+            {"destinationIndex": 1, "duration": "600s", "distanceMeters": 5000, "condition": "ROUTE_EXISTS"},
+            {"destinationIndex": 2, "duration": "0s", "distanceMeters": 0, "condition": "ROUTE_NOT_FOUND"},
+            {"originIndex": 1, "destinationIndex": 0, "duration": "600s", "distanceMeters": 5000, "condition": "ROUTE_EXISTS"},
+            {"originIndex": 1, "destinationIndex": 1, "duration": "0s", "distanceMeters": 0, "condition": "ROUTE_EXISTS"},
+            {"originIndex": 1, "destinationIndex": 2, "duration": "0s", "distanceMeters": 0, "condition": "ROUTE_NOT_FOUND"},
+            {"originIndex": 2, "destinationIndex": 0, "duration": "0s", "distanceMeters": 0, "condition": "ROUTE_NOT_FOUND"},
+            {"originIndex": 2, "destinationIndex": 1, "duration": "0s", "distanceMeters": 0, "condition": "ROUTE_NOT_FOUND"},
+            {"originIndex": 2, "destinationIndex": 2, "duration": "0s", "distanceMeters": 0, "condition": "ROUTE_EXISTS"},
+        ]
+        mock_post.return_value = MagicMock(status_code=200, json=lambda: rows)
+
+        with self.assertRaises(ro.UnroutableStopsError) as ctx:
+            ro.fetch_route_matrix("Bodega", ["Calle A", "Calle B rota"])
+
+        self.assertEqual(ctx.exception.addresses, ["Calle B rota"])

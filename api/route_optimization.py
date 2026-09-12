@@ -40,6 +40,19 @@ class RouteEngineError(Exception):
     """No se pudo calcular la ruta; el mensaje explica qué falta corregir."""
 
 
+class UnroutableStopsError(RouteEngineError):
+    """Google no pudo trazar ruta hacia/desde una o más direcciones.
+
+    `addresses` conserva el texto exacto recibido para que quien atrapa el
+    error pueda identificar a qué pedido pertenece cada una.
+    """
+
+    def __init__(self, addresses: list[str]):
+        self.addresses = addresses
+        joined = "; ".join(addresses)
+        super().__init__(f"El mapa no pudo ubicar estas direcciones: {joined}.")
+
+
 @dataclass(frozen=True)
 class RouteStopInput:
     order_id: str
@@ -195,11 +208,17 @@ def fetch_route_matrix(origin_address: str, stop_addresses: list[str]) -> list[l
         }
 
     if any(cell is None for row in matrix for cell in row):
-        logger.warning("La matriz de Google Maps quedó incompleta; se descarta la optimización.")
-        raise RouteEngineError(
-            "El mapa no pudo trazar la ruta entre todas las paradas. "
-            "Revisa que las direcciones sean localizables."
-        )
+        # Un punto sin ruta hacia/desde la bodega está desconectado del mapa vial
+        # (dirección con error, incompleta, o inexistente): identificamos cuál es
+        # para que se pueda corregir esa nota puntual, no solo "algo falló".
+        broken_indices = [
+            index
+            for index in range(1, size)
+            if matrix[0][index] is None or matrix[index][0] is None
+        ]
+        broken_addresses = [stop_addresses[index - 1] for index in broken_indices] or stop_addresses
+        logger.warning("Direcciones sin ruta en Google Maps: %s", broken_addresses)
+        raise UnroutableStopsError(broken_addresses)
 
     return matrix
 

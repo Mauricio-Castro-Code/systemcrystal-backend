@@ -311,7 +311,19 @@ def run_route_optimization(driver, route_date, orders: list[Order]) -> RouteOpti
             "Estas notas no tienen dirección capturada: " + ", ".join(missing)
         )
 
-    matrix = route_optimization.fetch_route_matrix(origin_address, stop_addresses)
+    try:
+        matrix = route_optimization.fetch_route_matrix(origin_address, stop_addresses)
+    except route_optimization.UnroutableStopsError as error:
+        # Traducimos direcciones -> folio para que el mensaje diga qué nota corregir,
+        # no solo el texto crudo de la dirección.
+        address_to_order_id = dict(zip(stop_addresses, (o.order_id for o in orders)))
+        broken = [
+            f"{address_to_order_id.get(address, '?')} ({address})" for address in error.addresses
+        ]
+        raise route_optimization.RouteEngineError(
+            "El mapa no pudo ubicar estas notas, corrige su dirección e intenta de nuevo: "
+            + ", ".join(broken)
+        ) from error
 
     stop_inputs = []
     for order, address in zip(orders, stop_addresses):
