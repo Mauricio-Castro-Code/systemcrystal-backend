@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from datetime import timedelta
+from urllib.parse import quote
 
+from django.conf import settings
 from django.utils import formats
 from django.utils import timezone
 
@@ -415,6 +417,30 @@ def build_driver_summary(user) -> dict | None:
     }
 
 
+def _build_navigation_url(order) -> str:
+    """Link de Maps para la parada del chofer.
+
+    Si administración capturó un link a mano (pin preciso), se respeta tal cual.
+    Si no, se genera un link de navegación turn-by-turn a partir de la dirección
+    de la nota -- así "Ver en mapa" funciona para todas las paradas, no solo las
+    que alguien se acordó de capturar.
+    """
+    if order.maps_url:
+        return order.maps_url
+
+    quotation = order.quotation
+    address_parts = [quotation.address, quotation.neighborhood]
+    address = ", ".join(part for part in address_parts if part)
+    if not address:
+        return ""
+
+    locality = settings.DRIVER_ROUTE_DEFAULT_LOCALITY
+    if locality and locality.split(",")[0].strip().lower() not in address.lower():
+        address = f"{address}, {locality}"
+
+    return f"https://www.google.com/maps/dir/?api=1&destination={quote(address)}&travelmode=driving"
+
+
 def build_driver_route_stop(order, run_stop: dict | None = None) -> dict:
     """Una parada de la ruta del chofer. Sin precios: solo qué y a dónde."""
     quotation = order.quotation
@@ -438,7 +464,7 @@ def build_driver_route_stop(order, run_stop: dict | None = None) -> dict:
         "deliveryInstructions": quotation.delivery_instructions,
         "deliveryDate": quotation.delivery_date.isoformat() if quotation.delivery_date else None,
         "eventDate": quotation.event_date.isoformat() if quotation.event_date else None,
-        "mapsUrl": order.maps_url or "",
+        "mapsUrl": _build_navigation_url(order),
         "operationalStatus": order.operational_status,
         "operationalStatusLabel": OPERATIONAL_STATUS_LABELS.get(
             order.operational_status, order.get_operational_status_display()
