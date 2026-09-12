@@ -394,6 +394,19 @@ def run_route_optimization(
     now = timezone.localtime().time()
     result = route_optimization.optimize_stops(stop_inputs, matrix, departure_reference=now)
 
+    # Compute Route Matrix solo dice si encontró *alguna* ruta, no si está seguro de
+    # dónde. Avisamos aparte (sin bloquear) cuando Google no tuvo confianza plena en
+    # una dirección de texto -- coordenadas exactas de un link ya no necesitan esto.
+    geocode_warnings = {
+        order.order_id: route_optimization.check_geocode_confidence(waypoint.address)
+        for order, waypoint in zip(orders, stop_waypoints)
+        if waypoint.address
+    }
+    for stop in result["stops"]:
+        warning = geocode_warnings.get(stop["orderId"])
+        if warning and not stop["alert"]:
+            stop["alert"] = warning
+
     recommended_departure = _parse_hhmm_or_none(result["recommendedDeparture"])
     first_stop_eta = _parse_hhmm_or_none(result["firstStopEta"])
 

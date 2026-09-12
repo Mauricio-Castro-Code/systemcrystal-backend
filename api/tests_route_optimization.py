@@ -331,3 +331,88 @@ class ResolveMapsUrlCoordinatesTests(SimpleTestCase):
         ro.resolve_maps_url_coordinates("https://maps.app.goo.gl/same-link")
 
         self.assertEqual(mock_get.call_count, 1)
+
+
+class CheckGeocodeConfidenceTests(SimpleTestCase):
+    databases = set()
+
+    def setUp(self):
+        cache.clear()
+
+    @override_settings(GOOGLE_MAPS_API_KEY="test-key")
+    @patch("api.route_optimization.requests.get")
+    def test_warns_on_partial_match(self, mock_get):
+        mock_get.return_value = MagicMock(
+            json=lambda: {
+                "status": "OK",
+                "results": [
+                    {
+                        "formatted_address": "San Rafael 10722-1, San Francisco Totimehuacan, Puebla",
+                        "partial_match": True,
+                        "geometry": {"location_type": "ROOFTOP"},
+                    }
+                ],
+            }
+        )
+
+        warning = ro.check_geocode_confidence("SAN RAFAEL 10722-1, SAN RAFALE XILOTZINGO, Puebla, Pue.")
+
+        self.assertIsNotNone(warning)
+        self.assertIn("San Francisco Totimehuacan", warning)
+
+    @override_settings(GOOGLE_MAPS_API_KEY="test-key")
+    @patch("api.route_optimization.requests.get")
+    def test_warns_on_approximate_location_type(self, mock_get):
+        mock_get.return_value = MagicMock(
+            json=lambda: {
+                "status": "OK",
+                "results": [
+                    {
+                        "formatted_address": "Puebla, Pue.",
+                        "partial_match": False,
+                        "geometry": {"location_type": "APPROXIMATE"},
+                    }
+                ],
+            }
+        )
+
+        warning = ro.check_geocode_confidence("dirección vaga")
+
+        self.assertIsNotNone(warning)
+
+    @override_settings(GOOGLE_MAPS_API_KEY="test-key")
+    @patch("api.route_optimization.requests.get")
+    def test_no_warning_for_confident_rooftop_match(self, mock_get):
+        mock_get.return_value = MagicMock(
+            json=lambda: {
+                "status": "OK",
+                "results": [
+                    {
+                        "formatted_address": "Calle Real 123, Puebla",
+                        "partial_match": False,
+                        "geometry": {"location_type": "ROOFTOP"},
+                    }
+                ],
+            }
+        )
+
+        self.assertIsNone(ro.check_geocode_confidence("Calle Real 123, Puebla"))
+
+    @override_settings(GOOGLE_MAPS_API_KEY="")
+    def test_no_warning_without_api_key(self):
+        self.assertIsNone(ro.check_geocode_confidence("cualquier dirección"))
+
+    @override_settings(GOOGLE_MAPS_API_KEY="test-key")
+    @patch("api.route_optimization.requests.get")
+    def test_caches_result_across_calls(self, mock_get):
+        mock_get.return_value = MagicMock(
+            json=lambda: {
+                "status": "OK",
+                "results": [{"formatted_address": "X", "partial_match": True, "geometry": {"location_type": "ROOFTOP"}}],
+            }
+        )
+
+        ro.check_geocode_confidence("misma dirección")
+        ro.check_geocode_confidence("misma dirección")
+
+        self.assertEqual(mock_get.call_count, 1)

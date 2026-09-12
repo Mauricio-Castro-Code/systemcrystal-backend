@@ -241,6 +241,58 @@ def resolve_maps_url_coordinates(url: str) -> tuple[float, float] | None:
     return coordinates
 
 
+GEOCODING_URL = "https://maps.googleapis.com/maps/api/geocode/json"
+GEOCODE_CHECK_CACHE_TTL_SECONDS = 60 * 60 * 24  # el resultado de geocodificar un texto no cambia
+
+# Estos location_type indican que Google no encontró el punto exacto, sino el
+# centro aproximado de una calle/colonia/ciudad completa -- no confiable para
+# saber a qué tan cerca queda una entrega puntual.
+_IMPRECISE_LOCATION_TYPES = {"GEOMETRIC_CENTER", "APPROXIMATE"}
+
+
+def check_geocode_confidence(address: str) -> str | None:
+    """Detecta -antes de optimizar- si Google no está seguro de una dirección.
+
+    Compute Route Matrix no expone esta señal (solo dice si encontró *alguna* ruta,
+    no si está seguro de dónde). La Geocoding API sí la da: `partial_match` significa
+    que tuvo que ignorar parte de lo escrito (ej. la colonia no coincidió), y
+    location_type aproximado significa que solo ubicó el centro de una zona amplia,
+    no un punto puntual. Devuelve un mensaje de advertencia, o None si está confiado.
+    Nunca bloquea: es una alerta, no un error -- algunas direcciones normales también
+    dan partial_match sin estar realmente mal.
+    """
+    normalized_address = str(address or "").strip()
+    if not normalized_address or not settings.GOOGLE_MAPS_API_KEY:
+        return None
+
+    cache_key = f"geocode_confidence:{hashlib.sha256(normalized_address.encode('utf-8')).hexdigest()}"
+    cached = cache.get(cache_key)
+    if cached is not None:
+        return None if cached == "none" else cached
+
+    warning = None
+    try:
+        response = requests.get(
+            GEOCODING_URL,
+            params={"address": normalized_address, "key": settings.GOOGLE_MAPS_API_KEY},
+            timeout=10,
+        )
+        data = response.json()
+        if data.get("status") == "OK" and data.get("results"):
+            result = data["results"][0]
+            location_type = result.get("geometry", {}).get("location_type")
+            formatted = result.get("formatted_address", "")
+            if result.get("partial_match"):
+                warning = f"Google no encontró una coincidencia exacta; la ubicó en: {formatted}"
+            elif location_type in _IMPRECISE_LOCATION_TYPES:
+                warning = f"Google solo ubicó el área aproximada, no el domicilio exacto: {formatted}"
+    except requests.RequestException:
+        logger.exception("No se pudo verificar la confianza de geocodificación: %s", normalized_address)
+
+    cache.set(cache_key, warning or "none", GEOCODE_CHECK_CACHE_TTL_SECONDS)
+    return warning
+
+
 def fetch_route_matrix(
     origin: Origin, stops: list[Waypoint], stop_labels: list[str]
 ) -> list[list[dict]]:
