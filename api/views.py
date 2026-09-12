@@ -134,11 +134,16 @@ def get_order_base_queryset():
     # REGEXP_REPLACE strips non-digits before casting so malformed folios
     # (0578*-25, 0496--25, 0340-26-1, etc.) are handled without errors.
     # NULLIF('','') → NULL → NULLS LAST keeps them at the bottom.
+    # La columna va calificada con la tabla: otras tablas unidas por select_related
+    # (p. ej. api_orderrouteconstraint) también tienen order_id y sin calificar
+    # Postgres falla con "column reference order_id is ambiguous".
     _year_sql = (
-        "CAST(NULLIF(REGEXP_REPLACE(SPLIT_PART(order_id,'-',2),'[^0-9]','','g'),'') AS INTEGER)"
+        'CAST(NULLIF(REGEXP_REPLACE(SPLIT_PART("api_order"."order_id",\'-\',2),'
+        "'[^0-9]','','g'),'') AS INTEGER)"
     )
     _num_sql = (
-        "CAST(NULLIF(REGEXP_REPLACE(SPLIT_PART(order_id,'-',1),'[^0-9]','','g'),'') AS INTEGER)"
+        'CAST(NULLIF(REGEXP_REPLACE(SPLIT_PART("api_order"."order_id",\'-\',1),'
+        "'[^0-9]','','g'),'') AS INTEGER)"
     )
 
     return (
