@@ -77,6 +77,32 @@ class RouteStopInput:
     priority: str = "NORMAL"
 
 
+@dataclass(frozen=True)
+class Origin:
+    """Punto de partida de la ruta: coordenadas del chofer (preferido) o una
+    dirección fija de respaldo (bodega) cuando no hay/se negó el GPS.
+    """
+
+    address: str | None = None
+    latitude: float | None = None
+    longitude: float | None = None
+
+    def as_waypoint(self) -> dict:
+        if self.latitude is not None and self.longitude is not None:
+            return {
+                "waypoint": {
+                    "location": {"latLng": {"latitude": self.latitude, "longitude": self.longitude}}
+                }
+            }
+        return {"waypoint": {"address": self.address}}
+
+    def cache_key_part(self) -> str:
+        if self.latitude is not None and self.longitude is not None:
+            # Redondeado a ~11m: agrupa el caché sin perder precisión relevante.
+            return f"{round(self.latitude, 4)},{round(self.longitude, 4)}"
+        return self.address or ""
+
+
 def parse_constraint_from_text(raw_note: str) -> dict:
     """Interpreta una nota libre del chofer y devuelve restricciones estructuradas.
 
@@ -160,24 +186,26 @@ def _parse_hhmm(value) -> datetime.time | None:
         return None
 
 
-def fetch_route_matrix(origin_address: str, stop_addresses: list[str]) -> list[list[dict]]:
-    """Matriz real de tiempos/distancias entre la bodega y cada parada (Google Routes API).
+def fetch_route_matrix(origin: Origin, stop_addresses: list[str]) -> list[list[dict]]:
+    """Matriz real de tiempos/distancias entre el origen y cada parada (Google Routes API).
 
-    Devuelve una matriz (n+1)x(n+1): índice 0 es el origen, 1..n son `stop_addresses` en el
-    mismo orden recibido. Cada celda es {"durationMinutes": float, "distanceKm": float}.
-    Lanza `RouteEngineError` si no se puede obtener — sin tiempos reales no hay optimización.
+    `origin` es la ubicación GPS del chofer al momento de optimizar (preferido) o la
+    dirección fija de la bodega como respaldo. Devuelve una matriz (n+1)x(n+1): índice 0
+    es el origen, 1..n son `stop_addresses` en el mismo orden recibido. Cada celda es
+    {"durationMinutes": float, "distanceKm": float}. Lanza `RouteEngineError` si no se
+    puede obtener — sin tiempos reales no hay optimización.
     """
     if not settings.GOOGLE_MAPS_API_KEY:
         raise RouteEngineError(
             "Falta configurar GOOGLE_MAPS_API_KEY en el servidor para calcular la ruta."
         )
 
-    cache_key = _matrix_cache_key(origin_address, stop_addresses)
+    cache_key = _matrix_cache_key(origin, stop_addresses)
     cached_matrix = cache.get(cache_key)
     if cached_matrix is not None:
         return cached_matrix
 
-    waypoints = [{"waypoint": {"address": origin_address}}] + [
+    waypoints = [origin.as_waypoint()] + [
         {"waypoint": {"address": address}} for address in stop_addresses
     ]
 
@@ -263,8 +291,8 @@ def fetch_route_matrix(origin_address: str, stop_addresses: list[str]) -> list[l
     return matrix
 
 
-def _matrix_cache_key(origin_address: str, stop_addresses: list[str]) -> str:
-    raw = origin_address + "|" + "|".join(stop_addresses)
+def _matrix_cache_key(origin: Origin, stop_addresses: list[str]) -> str:
+    raw = origin.cache_key_part() + "|" + "|".join(stop_addresses)
     digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()
     return f"route_matrix:{digest}"
 
@@ -287,21 +315,25 @@ def _describe_google_error(response) -> str:
 def optimize_stops(
     stops: list[RouteStopInput],
     matrix: list[list[dict]],
+    departure_reference: datetime.time | None = None,
 ) -> dict:
     """Heurística TSPTW (vecino más cercano + 2-opt) sobre una matriz de tiempos real.
 
     No calcula tiempos/distancias por sí misma: siempre parte de `matrix` (Google Maps).
+    `departure_reference` es la hora real en que se pide la optimización (normalmente
+    "ahora", ya que se parte de la ubicación GPS del chofer en ese instante) -- nunca se
+    parte antes de esa hora. Si no se especifica, se usa `DEFAULT_DAY_START` como piso.
     """
     if not stops:
         return {
             "stops": [],
-            "recommendedDeparture": DEFAULT_DAY_START.strftime("%H:%M"),
+            "recommendedDeparture": (departure_reference or DEFAULT_DAY_START).strftime("%H:%M"),
             "firstStopEta": None,
             "totalDurationMinutes": 0,
             "totalDistanceKm": 0.0,
         }
 
-    business_start = _minutes_since_midnight(DEFAULT_DAY_START)
+    business_start = _minutes_since_midnight(departure_reference or DEFAULT_DAY_START)
     order = _nearest_neighbor_order(stops, matrix, business_start)
     order = _two_opt(order, matrix, stops, business_start)
     departure_minutes = _recommended_departure_minutes(order[0], matrix, stops, business_start)

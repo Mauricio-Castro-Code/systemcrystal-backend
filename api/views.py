@@ -1217,8 +1217,12 @@ class DriverRouteOptimizeView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        origin_lat, origin_lng = self._parse_origin(request.data)
+
         try:
-            run = run_route_optimization(request.user, route_date, orders)
+            run = run_route_optimization(
+                request.user, route_date, orders, origin_lat=origin_lat, origin_lng=origin_lng
+            )
         except RouteEngineError as error:
             return Response({"detail": str(error)}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -1227,6 +1231,22 @@ class DriverRouteOptimizeView(APIView):
         orders.sort(key=lambda o: sequence_by_order_id.get(o.order_id, unsequenced_rank))
 
         return Response(build_driver_route(orders, route_date, run))
+
+    @staticmethod
+    def _parse_origin(data) -> tuple[float | None, float | None]:
+        """Ubicación GPS opcional del chofer (capturada por el navegador).
+
+        Si falta o no es válida, se retorna (None, None) y el servicio cae de
+        vuelta a la dirección fija de la bodega -- nunca bloquea la optimización.
+        """
+        try:
+            raw_lat = data.get("originLat")
+            raw_lng = data.get("originLng")
+            if raw_lat is None or raw_lng is None:
+                return None, None
+            return float(raw_lat), float(raw_lng)
+        except (TypeError, ValueError):
+            return None, None
 
 
 class OrderRouteConstraintView(APIView):

@@ -4,6 +4,7 @@ import datetime
 
 from django.conf import settings
 from django.db import transaction
+from django.utils import timezone
 
 from . import route_optimization
 from .models import (
@@ -304,18 +305,34 @@ def clear_order_route_constraint(order: Order) -> None:
     OrderRouteConstraint.objects.filter(order=order).delete()
 
 
-def run_route_optimization(driver, route_date, orders: list[Order]) -> RouteOptimizationRun:
+def run_route_optimization(
+    driver,
+    route_date,
+    orders: list[Order],
+    *,
+    origin_lat: float | None = None,
+    origin_lng: float | None = None,
+) -> RouteOptimizationRun:
     """Optimiza la ruta del día de un chofer y persiste el resultado.
+
+    `origin_lat`/`origin_lng` son la ubicación GPS del chofer al momento de pedir la
+    optimización (capturada por el navegador) -- se usan como punto de partida real en
+    vez de la bodega si el chofer dio permiso de ubicación. Sin ellas, se usa
+    `DRIVER_ROUTE_START_ADDRESS` como respaldo.
 
     Lanza `RouteEngineError` con un mensaje accionable si falta configuración,
     alguna parada no tiene dirección, o el motor de mapas no pudo responder.
     """
-    origin_address = settings.DRIVER_ROUTE_START_ADDRESS
-
-    if not origin_address:
-        raise route_optimization.RouteEngineError(
-            "Falta configurar la dirección de salida (DRIVER_ROUTE_START_ADDRESS) en el servidor."
-        )
+    if origin_lat is not None and origin_lng is not None:
+        origin = route_optimization.Origin(latitude=origin_lat, longitude=origin_lng)
+    else:
+        origin_address = settings.DRIVER_ROUTE_START_ADDRESS
+        if not origin_address:
+            raise route_optimization.RouteEngineError(
+                "No se pudo obtener tu ubicación y falta configurar la dirección de "
+                "salida (DRIVER_ROUTE_START_ADDRESS) en el servidor."
+            )
+        origin = route_optimization.Origin(address=origin_address)
 
     stop_addresses = [_order_stop_address(order) for order in orders]
     missing = [order.order_id for order, address in zip(orders, stop_addresses) if not address]
@@ -326,7 +343,7 @@ def run_route_optimization(driver, route_date, orders: list[Order]) -> RouteOpti
         )
 
     try:
-        matrix = route_optimization.fetch_route_matrix(origin_address, stop_addresses)
+        matrix = route_optimization.fetch_route_matrix(origin, stop_addresses)
     except route_optimization.UnroutableStopsError as error:
         # Traducimos direcciones -> folio para que el mensaje diga qué nota corregir,
         # no solo el texto crudo de la dirección.
@@ -352,7 +369,10 @@ def run_route_optimization(driver, route_date, orders: list[Order]) -> RouteOpti
             )
         )
 
-    result = route_optimization.optimize_stops(stop_inputs, matrix)
+    # Se parte de la hora real (no de un "inicio de jornada" fijo): el chofer ya está
+    # en movimiento -- el resultado siempre respeta que no se puede salir antes de ahora.
+    now = timezone.localtime().time()
+    result = route_optimization.optimize_stops(stop_inputs, matrix, departure_reference=now)
 
     recommended_departure = _parse_hhmm_or_none(result["recommendedDeparture"])
     first_stop_eta = _parse_hhmm_or_none(result["firstStopEta"])

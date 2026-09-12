@@ -95,6 +95,16 @@ class OptimizeStopsTests(SimpleTestCase):
         self.assertEqual(result["recommendedDeparture"], ro.DEFAULT_DAY_START.strftime("%H:%M"))
         self.assertEqual(result["firstStopEta"], "08:20")
 
+    def test_departs_from_real_time_not_a_fixed_default(self):
+        # El chofer ya está en movimiento (GPS): la salida es "ahora", no 08:00 fijo.
+        stops = [ro.RouteStopInput(order_id="A", address="Calle A")]
+        matrix = _matrix([[0, 20], [20, 0]])
+
+        result = ro.optimize_stops(stops, matrix, departure_reference=datetime.time(13, 30))
+
+        self.assertEqual(result["recommendedDeparture"], "13:30")
+        self.assertEqual(result["firstStopEta"], "13:50")
+
 
 class ParseConstraintFromTextTests(SimpleTestCase):
     databases = set()
@@ -144,7 +154,7 @@ class FetchRouteMatrixTests(SimpleTestCase):
     @override_settings(GOOGLE_MAPS_API_KEY="")
     def test_raises_without_api_key(self):
         with self.assertRaises(ro.RouteEngineError):
-            ro.fetch_route_matrix("Bodega", ["Calle A"])
+            ro.fetch_route_matrix(ro.Origin(address="Bodega"), ["Calle A"])
 
     @override_settings(GOOGLE_MAPS_API_KEY="test-key")
     @patch("api.route_optimization.requests.post")
@@ -155,7 +165,7 @@ class FetchRouteMatrixTests(SimpleTestCase):
         mock_post.return_value = MagicMock(status_code=403, json=lambda: error_body, text="403")
 
         with self.assertRaises(ro.RouteEngineError) as ctx:
-            ro.fetch_route_matrix("Bodega", ["Calle A"])
+            ro.fetch_route_matrix(ro.Origin(address="Bodega"), ["Calle A"])
 
         self.assertIn("Routes API has not been used", str(ctx.exception))
 
@@ -171,7 +181,7 @@ class FetchRouteMatrixTests(SimpleTestCase):
         ]
         mock_post.return_value = MagicMock(status_code=200, json=lambda: rows)
 
-        matrix = ro.fetch_route_matrix("Bodega", ["Calle A"])
+        matrix = ro.fetch_route_matrix(ro.Origin(address="Bodega"), ["Calle A"])
 
         self.assertEqual(matrix[0][1]["durationMinutes"], 10)
         self.assertEqual(matrix[0][1]["distanceKm"], 5)
@@ -188,8 +198,8 @@ class FetchRouteMatrixTests(SimpleTestCase):
         ]
         mock_post.return_value = MagicMock(status_code=200, json=lambda: rows)
 
-        first = ro.fetch_route_matrix("Bodega", ["Calle A"])
-        second = ro.fetch_route_matrix("Bodega", ["Calle A"])
+        first = ro.fetch_route_matrix(ro.Origin(address="Bodega"), ["Calle A"])
+        second = ro.fetch_route_matrix(ro.Origin(address="Bodega"), ["Calle A"])
 
         self.assertEqual(mock_post.call_count, 1)
         self.assertEqual(first, second)
@@ -203,7 +213,7 @@ class FetchRouteMatrixTests(SimpleTestCase):
         mock_post.return_value = MagicMock(status_code=200, json=lambda: rows)
 
         with self.assertRaises(ro.RouteEngineError):
-            ro.fetch_route_matrix("Bodega", ["Calle A"])
+            ro.fetch_route_matrix(ro.Origin(address="Bodega"), ["Calle A"])
 
     @override_settings(GOOGLE_MAPS_API_KEY="test-key")
     @patch("api.route_optimization.requests.post")
@@ -223,7 +233,7 @@ class FetchRouteMatrixTests(SimpleTestCase):
         mock_post.return_value = MagicMock(status_code=200, json=lambda: rows)
 
         with self.assertRaises(ro.UnroutableStopsError) as ctx:
-            ro.fetch_route_matrix("Bodega", ["Calle A", "Calle B rota"])
+            ro.fetch_route_matrix(ro.Origin(address="Bodega"), ["Calle A", "Calle B rota"])
 
         self.assertEqual(ctx.exception.addresses, ["Calle B rota"])
 
@@ -241,6 +251,6 @@ class FetchRouteMatrixTests(SimpleTestCase):
         mock_post.return_value = MagicMock(status_code=200, json=lambda: rows)
 
         with self.assertRaises(ro.UnroutableStopsError) as ctx:
-            ro.fetch_route_matrix("Bodega", ["Barrio de San Juan, otro municipio"])
+            ro.fetch_route_matrix(ro.Origin(address="Bodega"), ["Barrio de San Juan, otro municipio"])
 
         self.assertEqual(ctx.exception.addresses, ["Barrio de San Juan, otro municipio"])
