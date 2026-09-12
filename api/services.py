@@ -335,25 +335,45 @@ def run_route_optimization(
         origin = route_optimization.Origin(address=origin_address)
 
     stop_addresses = [_order_stop_address(order) for order in orders]
-    missing = [order.order_id for order, address in zip(orders, stop_addresses) if not address]
 
+    # Si administración/el chofer ya capturó el link de Maps que mandó el cliente, se
+    # usan esas coordenadas exactas en vez de adivinar con el texto de la dirección
+    # (que puede ser ambiguo: "Barrio de San Juan" existe en más de un municipio).
+    stop_waypoints: list[route_optimization.Waypoint] = []
+    stop_labels: list[str] = []
+    for order, address in zip(orders, stop_addresses):
+        coordinates = (
+            route_optimization.resolve_maps_url_coordinates(order.maps_url)
+            if order.maps_url
+            else None
+        )
+        if coordinates:
+            stop_waypoints.append(
+                route_optimization.Waypoint(latitude=coordinates[0], longitude=coordinates[1])
+            )
+        else:
+            stop_waypoints.append(route_optimization.Waypoint(address=address))
+        stop_labels.append(address or order.maps_url or order.order_id)
+
+    missing = [
+        order.order_id
+        for order, waypoint in zip(orders, stop_waypoints)
+        if not waypoint.address and waypoint.latitude is None
+    ]
     if missing:
         raise route_optimization.RouteEngineError(
-            "Estas notas no tienen dirección capturada: " + ", ".join(missing)
+            "Estas notas no tienen dirección ni link de ubicación capturado: " + ", ".join(missing)
         )
 
     try:
-        matrix = route_optimization.fetch_route_matrix(origin, stop_addresses)
+        matrix = route_optimization.fetch_route_matrix(origin, stop_waypoints, stop_labels)
     except route_optimization.UnroutableStopsError as error:
-        # Traducimos direcciones -> folio para que el mensaje diga qué nota corregir,
-        # no solo el texto crudo de la dirección.
-        address_to_order_id = dict(zip(stop_addresses, (o.order_id for o in orders)))
-        broken = [
-            f"{address_to_order_id.get(address, '?')} ({address})" for address in error.addresses
-        ]
+        # Traducimos etiqueta -> folio para que el mensaje diga qué nota corregir.
+        label_to_order_id = dict(zip(stop_labels, (o.order_id for o in orders)))
+        broken = [f"{label_to_order_id.get(label, '?')} ({label})" for label in error.addresses]
         raise route_optimization.RouteEngineError(
-            "El mapa no pudo ubicar estas notas, corrige su dirección e intenta de nuevo: "
-            + ", ".join(broken)
+            "El mapa no pudo ubicar estas notas -- corrige su dirección o pega el link de "
+            "ubicación que mandó el cliente, e intenta de nuevo: " + ", ".join(broken)
         ) from error
 
     stop_inputs = []

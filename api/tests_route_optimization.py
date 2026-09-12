@@ -19,6 +19,10 @@ from django.test import SimpleTestCase, override_settings
 from api import route_optimization as ro
 
 
+def _addr_stops(addresses: list[str]) -> list[ro.Waypoint]:
+    return [ro.Waypoint(address=address) for address in addresses]
+
+
 def _matrix(times: list[list[float]], distances: list[list[float]] | None = None) -> list[list[dict]]:
     distances = distances or [[t * 0.5 for t in row] for row in times]
     return [
@@ -154,7 +158,7 @@ class FetchRouteMatrixTests(SimpleTestCase):
     @override_settings(GOOGLE_MAPS_API_KEY="")
     def test_raises_without_api_key(self):
         with self.assertRaises(ro.RouteEngineError):
-            ro.fetch_route_matrix(ro.Origin(address="Bodega"), ["Calle A"])
+            ro.fetch_route_matrix(ro.Origin(address="Bodega"), _addr_stops(["Calle A"]), ["Calle A"])
 
     @override_settings(GOOGLE_MAPS_API_KEY="test-key")
     @patch("api.route_optimization.requests.post")
@@ -165,7 +169,7 @@ class FetchRouteMatrixTests(SimpleTestCase):
         mock_post.return_value = MagicMock(status_code=403, json=lambda: error_body, text="403")
 
         with self.assertRaises(ro.RouteEngineError) as ctx:
-            ro.fetch_route_matrix(ro.Origin(address="Bodega"), ["Calle A"])
+            ro.fetch_route_matrix(ro.Origin(address="Bodega"), _addr_stops(["Calle A"]), ["Calle A"])
 
         self.assertIn("Routes API has not been used", str(ctx.exception))
 
@@ -181,7 +185,7 @@ class FetchRouteMatrixTests(SimpleTestCase):
         ]
         mock_post.return_value = MagicMock(status_code=200, json=lambda: rows)
 
-        matrix = ro.fetch_route_matrix(ro.Origin(address="Bodega"), ["Calle A"])
+        matrix = ro.fetch_route_matrix(ro.Origin(address="Bodega"), _addr_stops(["Calle A"]), ["Calle A"])
 
         self.assertEqual(matrix[0][1]["durationMinutes"], 10)
         self.assertEqual(matrix[0][1]["distanceKm"], 5)
@@ -198,8 +202,8 @@ class FetchRouteMatrixTests(SimpleTestCase):
         ]
         mock_post.return_value = MagicMock(status_code=200, json=lambda: rows)
 
-        first = ro.fetch_route_matrix(ro.Origin(address="Bodega"), ["Calle A"])
-        second = ro.fetch_route_matrix(ro.Origin(address="Bodega"), ["Calle A"])
+        first = ro.fetch_route_matrix(ro.Origin(address="Bodega"), _addr_stops(["Calle A"]), ["Calle A"])
+        second = ro.fetch_route_matrix(ro.Origin(address="Bodega"), _addr_stops(["Calle A"]), ["Calle A"])
 
         self.assertEqual(mock_post.call_count, 1)
         self.assertEqual(first, second)
@@ -213,7 +217,7 @@ class FetchRouteMatrixTests(SimpleTestCase):
         mock_post.return_value = MagicMock(status_code=200, json=lambda: rows)
 
         with self.assertRaises(ro.RouteEngineError):
-            ro.fetch_route_matrix(ro.Origin(address="Bodega"), ["Calle A"])
+            ro.fetch_route_matrix(ro.Origin(address="Bodega"), _addr_stops(["Calle A"]), ["Calle A"])
 
     @override_settings(GOOGLE_MAPS_API_KEY="test-key")
     @patch("api.route_optimization.requests.post")
@@ -233,7 +237,7 @@ class FetchRouteMatrixTests(SimpleTestCase):
         mock_post.return_value = MagicMock(status_code=200, json=lambda: rows)
 
         with self.assertRaises(ro.UnroutableStopsError) as ctx:
-            ro.fetch_route_matrix(ro.Origin(address="Bodega"), ["Calle A", "Calle B rota"])
+            ro.fetch_route_matrix(ro.Origin(address="Bodega"), _addr_stops(["Calle A", "Calle B rota"]), ["Calle A", "Calle B rota"])
 
         self.assertEqual(ctx.exception.addresses, ["Calle B rota"])
 
@@ -251,6 +255,79 @@ class FetchRouteMatrixTests(SimpleTestCase):
         mock_post.return_value = MagicMock(status_code=200, json=lambda: rows)
 
         with self.assertRaises(ro.UnroutableStopsError) as ctx:
-            ro.fetch_route_matrix(ro.Origin(address="Bodega"), ["Barrio de San Juan, otro municipio"])
+            ro.fetch_route_matrix(ro.Origin(address="Bodega"), _addr_stops(["Barrio de San Juan, otro municipio"]), ["Barrio de San Juan, otro municipio"])
 
         self.assertEqual(ctx.exception.addresses, ["Barrio de San Juan, otro municipio"])
+
+    @override_settings(GOOGLE_MAPS_API_KEY="test-key")
+    @patch("api.route_optimization.requests.post")
+    def test_does_not_reject_far_stop_when_coordinates_are_exact(self, mock_post):
+        # Misma distancia de 150km que el test anterior, pero esta vez viene de
+        # coordenadas exactas (link del cliente), no de geocodificar texto ambiguo:
+        # puede ser una entrega legítimamente lejana, no se rechaza.
+        rows = [
+            {"destinationIndex": 0, "duration": "0s", "distanceMeters": 0, "condition": "ROUTE_EXISTS"},
+            {"destinationIndex": 1, "duration": "36000s", "distanceMeters": 150_000, "condition": "ROUTE_EXISTS"},
+            {"originIndex": 1, "destinationIndex": 0, "duration": "36000s", "distanceMeters": 150_000, "condition": "ROUTE_EXISTS"},
+            {"originIndex": 1, "destinationIndex": 1, "duration": "0s", "distanceMeters": 0, "condition": "ROUTE_EXISTS"},
+        ]
+        mock_post.return_value = MagicMock(status_code=200, json=lambda: rows)
+
+        matrix = ro.fetch_route_matrix(
+            ro.Origin(address="Bodega"),
+            [ro.Waypoint(latitude=19.24, longitude=-97.14)],
+            ["1251-26 (link del cliente)"],
+        )
+
+        self.assertEqual(matrix[0][1]["distanceKm"], 150)
+
+
+class ResolveMapsUrlCoordinatesTests(SimpleTestCase):
+    databases = set()
+
+    def setUp(self):
+        cache.clear()
+
+    @patch("api.route_optimization.requests.get")
+    def test_extracts_precise_pin_over_viewport_center(self, mock_get):
+        mock_get.return_value = MagicMock(
+            url="https://www.google.com/maps/place/X/@19.05,-98.20,17z/data=!4m5!3m4!1s0x0:0x0!8m2!3d19.0577123!4d-98.2374456"
+        )
+
+        result = ro.resolve_maps_url_coordinates("https://maps.app.goo.gl/abc123")
+
+        self.assertEqual(result, (19.0577123, -98.2374456))
+
+    @patch("api.route_optimization.requests.get")
+    def test_falls_back_to_viewport_center(self, mock_get):
+        mock_get.return_value = MagicMock(url="https://www.google.com/maps/@19.0577,-98.2374,15z")
+
+        result = ro.resolve_maps_url_coordinates("https://maps.app.goo.gl/abc123")
+
+        self.assertEqual(result, (19.0577, -98.2374))
+
+    @patch("api.route_optimization.requests.get")
+    def test_returns_none_when_link_has_no_coordinates(self, mock_get):
+        mock_get.return_value = MagicMock(url="https://www.google.com/maps/place/Some+Place")
+
+        self.assertIsNone(ro.resolve_maps_url_coordinates("https://maps.app.goo.gl/abc123"))
+
+    @patch("api.route_optimization.requests.get")
+    def test_returns_none_and_does_not_raise_on_network_error(self, mock_get):
+        import requests
+
+        mock_get.side_effect = requests.RequestException("boom")
+
+        self.assertIsNone(ro.resolve_maps_url_coordinates("https://maps.app.goo.gl/abc123"))
+
+    def test_returns_none_for_blank_url(self):
+        self.assertIsNone(ro.resolve_maps_url_coordinates(""))
+
+    @patch("api.route_optimization.requests.get")
+    def test_caches_resolution_across_calls(self, mock_get):
+        mock_get.return_value = MagicMock(url="https://www.google.com/maps/@19.0577,-98.2374,15z")
+
+        ro.resolve_maps_url_coordinates("https://maps.app.goo.gl/same-link")
+        ro.resolve_maps_url_coordinates("https://maps.app.goo.gl/same-link")
+
+        self.assertEqual(mock_get.call_count, 1)

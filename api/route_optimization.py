@@ -15,6 +15,7 @@ import datetime
 import hashlib
 import json
 import logging
+import re
 from dataclasses import dataclass
 
 import requests
@@ -56,16 +57,16 @@ class RouteEngineError(Exception):
 
 
 class UnroutableStopsError(RouteEngineError):
-    """Google no pudo trazar ruta hacia/desde una o más direcciones.
+    """Google no pudo trazar ruta hacia/desde una o más paradas (o las ubicó implausiblemente lejos).
 
-    `addresses` conserva el texto exacto recibido para que quien atrapa el
-    error pueda identificar a qué pedido pertenece cada una.
+    `addresses` trae la etiqueta (dirección o folio) de cada una para que quien
+    atrapa el error pueda identificar a qué pedido pertenece.
     """
 
     def __init__(self, addresses: list[str]):
         self.addresses = addresses
         joined = "; ".join(addresses)
-        super().__init__(f"El mapa no pudo ubicar estas direcciones: {joined}.")
+        super().__init__(f"El mapa no pudo ubicar estas paradas: {joined}.")
 
 
 @dataclass(frozen=True)
@@ -78,9 +79,10 @@ class RouteStopInput:
 
 
 @dataclass(frozen=True)
-class Origin:
-    """Punto de partida de la ruta: coordenadas del chofer (preferido) o una
-    dirección fija de respaldo (bodega) cuando no hay/se negó el GPS.
+class Waypoint:
+    """Un punto para Google Maps: coordenadas exactas (preferido) o una dirección
+    de texto a geocodificar. Se usa tanto para el origen (GPS del chofer o bodega)
+    como para las paradas (coordenadas de un link de Maps, o la dirección de la nota).
     """
 
     address: str | None = None
@@ -101,6 +103,10 @@ class Origin:
             # Redondeado a ~11m: agrupa el caché sin perder precisión relevante.
             return f"{round(self.latitude, 4)},{round(self.longitude, 4)}"
         return self.address or ""
+
+
+# Alias por legibilidad en el punto de partida (misma forma que una parada).
+Origin = Waypoint
 
 
 def parse_constraint_from_text(raw_note: str) -> dict:
@@ -186,28 +192,79 @@ def _parse_hhmm(value) -> datetime.time | None:
         return None
 
 
-def fetch_route_matrix(origin: Origin, stop_addresses: list[str]) -> list[list[dict]]:
+# Coordenadas del pin exacto ("!3d<lat>!4d<lng>") o, si no aparece, del centro del
+# mapa en el momento de compartir ("@<lat>,<lng>,<zoom>") -- el pin es más preciso.
+_PRECISE_PIN_PATTERN = re.compile(r"!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)")
+_VIEWPORT_PATTERN = re.compile(r"@(-?\d+\.\d+),(-?\d+\.\d+)")
+_QUERY_PATTERN = re.compile(r"[?&]q=(-?\d+\.\d+),(-?\d+\.\d+)")
+
+MAPS_LINK_CACHE_TTL_SECONDS = 60 * 60 * 24  # el link de un cliente no cambia de coordenadas
+
+
+def resolve_maps_url_coordinates(url: str) -> tuple[float, float] | None:
+    """Extrae lat/lng de un link de Google Maps (largo o acortado tipo maps.app.goo.gl).
+
+    Sirve para cuando el cliente comparte su ubicación por WhatsApp: en vez de adivinar
+    con el texto de la dirección (que puede ser ambiguo entre municipios), se usa el
+    punto exacto que el cliente marcó. Devuelve None si no se pudo resolver -- nunca
+    bloquea: quien llama simplemente cae de vuelta a geocodificar la dirección de texto.
+    """
+    normalized_url = str(url or "").strip()
+    if not normalized_url:
+        return None
+
+    cache_key = f"maps_url_coords:{hashlib.sha256(normalized_url.encode('utf-8')).hexdigest()}"
+    cached = cache.get(cache_key)
+    if cached is not None:
+        return None if cached == "none" else tuple(cached)
+
+    coordinates = None
+    try:
+        response = requests.get(
+            normalized_url,
+            allow_redirects=True,
+            timeout=10,
+            headers={"User-Agent": "Mozilla/5.0"},
+        )
+        final_url = response.url
+        match = (
+            _PRECISE_PIN_PATTERN.search(final_url)
+            or _VIEWPORT_PATTERN.search(final_url)
+            or _QUERY_PATTERN.search(final_url)
+        )
+        if match:
+            coordinates = (float(match.group(1)), float(match.group(2)))
+    except requests.RequestException:
+        logger.exception("No se pudo resolver el link de Maps: %s", normalized_url)
+
+    cache.set(cache_key, list(coordinates) if coordinates else "none", MAPS_LINK_CACHE_TTL_SECONDS)
+    return coordinates
+
+
+def fetch_route_matrix(
+    origin: Origin, stops: list[Waypoint], stop_labels: list[str]
+) -> list[list[dict]]:
     """Matriz real de tiempos/distancias entre el origen y cada parada (Google Routes API).
 
     `origin` es la ubicación GPS del chofer al momento de optimizar (preferido) o la
-    dirección fija de la bodega como respaldo. Devuelve una matriz (n+1)x(n+1): índice 0
-    es el origen, 1..n son `stop_addresses` en el mismo orden recibido. Cada celda es
-    {"durationMinutes": float, "distanceKm": float}. Lanza `RouteEngineError` si no se
-    puede obtener — sin tiempos reales no hay optimización.
+    dirección fija de la bodega como respaldo. `stops` es un `Waypoint` por parada
+    (coordenadas exactas si hay un link de Maps guardado, o su dirección de texto).
+    `stop_labels` es solo para mensajes de error (qué mostrar si esa parada falla).
+    Devuelve una matriz (n+1)x(n+1): índice 0 es el origen, 1..n son `stops` en el mismo
+    orden recibido. Cada celda es {"durationMinutes": float, "distanceKm": float}.
+    Lanza `RouteEngineError` si no se puede obtener — sin tiempos reales no hay optimización.
     """
     if not settings.GOOGLE_MAPS_API_KEY:
         raise RouteEngineError(
             "Falta configurar GOOGLE_MAPS_API_KEY en el servidor para calcular la ruta."
         )
 
-    cache_key = _matrix_cache_key(origin, stop_addresses)
+    cache_key = _matrix_cache_key(origin, stops)
     cached_matrix = cache.get(cache_key)
     if cached_matrix is not None:
         return cached_matrix
 
-    waypoints = [origin.as_waypoint()] + [
-        {"waypoint": {"address": address}} for address in stop_addresses
-    ]
+    waypoints = [origin.as_waypoint()] + [stop.as_waypoint() for stop in stops]
 
     payload = {
         "origins": waypoints,
@@ -269,30 +326,37 @@ def fetch_route_matrix(origin: Origin, stop_addresses: list[str]) -> list[list[d
             for index in range(1, size)
             if matrix[0][index] is None or matrix[index][0] is None
         ]
-        broken_addresses = [stop_addresses[index - 1] for index in broken_indices] or stop_addresses
-        logger.warning("Direcciones sin ruta en Google Maps: %s", broken_addresses)
-        raise UnroutableStopsError(broken_addresses)
+        broken_labels = [stop_labels[index - 1] for index in broken_indices] or stop_labels
+        logger.warning("Paradas sin ruta en Google Maps: %s", broken_labels)
+        raise UnroutableStopsError(broken_labels)
 
+    # El chequeo de distancia implausible solo aplica a paradas geocodificadas por
+    # texto (riesgo de ambigüedad); si ya tenemos coordenadas exactas de un link de
+    # Maps, la distancia es real y no hay nada que "corregir" -- puede ser una
+    # entrega legítimamente lejana.
     implausible_indices = [
         index
         for index in range(1, size)
-        if matrix[0][index]["distanceKm"] > MAX_PLAUSIBLE_DISTANCE_KM
-        or matrix[index][0]["distanceKm"] > MAX_PLAUSIBLE_DISTANCE_KM
+        if stops[index - 1].latitude is None
+        and (
+            matrix[0][index]["distanceKm"] > MAX_PLAUSIBLE_DISTANCE_KM
+            or matrix[index][0]["distanceKm"] > MAX_PLAUSIBLE_DISTANCE_KM
+        )
     ]
     if implausible_indices:
-        implausible_addresses = [stop_addresses[index - 1] for index in implausible_indices]
+        implausible_labels = [stop_labels[index - 1] for index in implausible_indices]
         logger.warning(
-            "Direcciones geocodificadas a un lugar implausiblemente lejano: %s",
-            implausible_addresses,
+            "Paradas geocodificadas a un lugar implausiblemente lejano: %s",
+            implausible_labels,
         )
-        raise UnroutableStopsError(implausible_addresses)
+        raise UnroutableStopsError(implausible_labels)
 
     cache.set(cache_key, matrix, MATRIX_CACHE_TTL_SECONDS)
     return matrix
 
 
-def _matrix_cache_key(origin: Origin, stop_addresses: list[str]) -> str:
-    raw = origin.cache_key_part() + "|" + "|".join(stop_addresses)
+def _matrix_cache_key(origin: Origin, stops: list[Waypoint]) -> str:
+    raw = origin.cache_key_part() + "|" + "|".join(stop.cache_key_part() for stop in stops)
     digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()
     return f"route_matrix:{digest}"
 
