@@ -12,16 +12,23 @@ Reparto de responsabilidades, deliberado:
 from __future__ import annotations
 
 import datetime
+import hashlib
 import json
 import logging
 from dataclasses import dataclass
 
 import requests
 from django.conf import settings
+from django.core.cache import cache
 
 logger = logging.getLogger(__name__)
 
 ROUTES_MATRIX_URL = "https://routes.googleapis.com/distanceMatrix/v2:computeRouteMatrix"
+
+# Evita pagar dos veces por la misma matriz si el chofer/admin le da doble clic a
+# "Optimizar ruta" o si se reintenta tras un error -- las paradas del día no
+# cambian de un minuto a otro, así que un caché corto es seguro.
+MATRIX_CACHE_TTL_SECONDS = 300
 
 # Tiempo que el chofer tarda en cada parada (carga/descarga/firma) antes de partir a la siguiente.
 STOP_SERVICE_MINUTES = 15
@@ -157,6 +164,11 @@ def fetch_route_matrix(origin_address: str, stop_addresses: list[str]) -> list[l
             "Falta configurar GOOGLE_MAPS_API_KEY en el servidor para calcular la ruta."
         )
 
+    cache_key = _matrix_cache_key(origin_address, stop_addresses)
+    cached_matrix = cache.get(cache_key)
+    if cached_matrix is not None:
+        return cached_matrix
+
     waypoints = [{"waypoint": {"address": origin_address}}] + [
         {"waypoint": {"address": address}} for address in stop_addresses
     ]
@@ -165,6 +177,11 @@ def fetch_route_matrix(origin_address: str, stop_addresses: list[str]) -> list[l
         "origins": waypoints,
         "destinations": waypoints,
         "travelMode": "DRIVE",
+        # TRAFFIC_AWARE cae en el SKU "Pro" de Compute Route Matrix: misma cuota
+        # gratis mensual que "Essentials" (10,000 elementos), pero el precio por
+        # elemento después de agotarla es el doble ($10 vs $5 por 1,000). Se prioriza
+        # la puntualidad real sobre el ahorro, ya que con 1-2 camionetas es muy
+        # improbable exceder la cuota gratis de todas formas.
         "routingPreference": "TRAFFIC_AWARE",
     }
     headers = {
@@ -220,7 +237,14 @@ def fetch_route_matrix(origin_address: str, stop_addresses: list[str]) -> list[l
         logger.warning("Direcciones sin ruta en Google Maps: %s", broken_addresses)
         raise UnroutableStopsError(broken_addresses)
 
+    cache.set(cache_key, matrix, MATRIX_CACHE_TTL_SECONDS)
     return matrix
+
+
+def _matrix_cache_key(origin_address: str, stop_addresses: list[str]) -> str:
+    raw = origin_address + "|" + "|".join(stop_addresses)
+    digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+    return f"route_matrix:{digest}"
 
 
 def _describe_google_error(response) -> str:

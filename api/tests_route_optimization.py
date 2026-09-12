@@ -13,6 +13,7 @@ import datetime
 import json
 from unittest.mock import MagicMock, patch
 
+from django.core.cache import cache
 from django.test import SimpleTestCase, override_settings
 
 from api import route_optimization as ro
@@ -135,6 +136,11 @@ class ParseConstraintFromTextTests(SimpleTestCase):
 class FetchRouteMatrixTests(SimpleTestCase):
     databases = set()
 
+    def setUp(self):
+        # fetch_route_matrix cachea por (origen, direcciones); sin esto, un test
+        # deja en caché la matriz que el siguiente test cree que está mockeando.
+        cache.clear()
+
     @override_settings(GOOGLE_MAPS_API_KEY="")
     def test_raises_without_api_key(self):
         with self.assertRaises(ro.RouteEngineError):
@@ -170,6 +176,23 @@ class FetchRouteMatrixTests(SimpleTestCase):
         self.assertEqual(matrix[0][1]["durationMinutes"], 10)
         self.assertEqual(matrix[0][1]["distanceKm"], 5)
         self.assertEqual(matrix[1][0]["durationMinutes"], 10)
+
+    @override_settings(GOOGLE_MAPS_API_KEY="test-key")
+    @patch("api.route_optimization.requests.post")
+    def test_second_call_with_same_stops_reuses_cache(self, mock_post):
+        rows = [
+            {"destinationIndex": 0, "duration": "0s", "distanceMeters": 0, "condition": "ROUTE_EXISTS"},
+            {"destinationIndex": 1, "duration": "600s", "distanceMeters": 5000, "condition": "ROUTE_EXISTS"},
+            {"originIndex": 1, "destinationIndex": 0, "duration": "600s", "distanceMeters": 5000, "condition": "ROUTE_EXISTS"},
+            {"originIndex": 1, "destinationIndex": 1, "duration": "0s", "distanceMeters": 0, "condition": "ROUTE_EXISTS"},
+        ]
+        mock_post.return_value = MagicMock(status_code=200, json=lambda: rows)
+
+        first = ro.fetch_route_matrix("Bodega", ["Calle A"])
+        second = ro.fetch_route_matrix("Bodega", ["Calle A"])
+
+        self.assertEqual(mock_post.call_count, 1)
+        self.assertEqual(first, second)
 
     @override_settings(GOOGLE_MAPS_API_KEY="test-key")
     @patch("api.route_optimization.requests.post")
