@@ -31,7 +31,8 @@ class ClientAdmin(admin.ModelAdmin):
 
 @admin.register(InventoryProduct)
 class InventoryProductAdmin(admin.ModelAdmin):
-    list_display = ("name", "quantity", "unit_price", "updated_at")
+    list_display = ("name", "category", "quantity", "unit_price", "updated_at")
+    list_filter = ("category",)
     search_fields = ("name",)
 
 

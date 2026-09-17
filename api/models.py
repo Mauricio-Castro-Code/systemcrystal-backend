@@ -248,10 +248,18 @@ class ClientAddress(TimestampedModel):
 
 
 class InventoryProduct(TimestampedModel):
+    class Category(models.TextChoices):
+        VAJILLA = "VAJILLA", "Vajilla"
+        MOBILIARIO = "MOBILIARIO", "Mobiliario"
+        OTROS = "OTROS", "Otros"
+
     name = models.CharField(max_length=120)
     name_key = models.CharField(max_length=120, unique=True, editable=False)
     quantity = models.PositiveIntegerField(default=0)
     unit_price = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    category = models.CharField(
+        max_length=20, choices=Category.choices, default=Category.OTROS
+    )
 
     class Meta:
         ordering = ("name", "id")

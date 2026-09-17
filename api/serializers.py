@@ -81,10 +81,14 @@ class InventoryItemSerializer(serializers.ModelSerializer):
         decimal_places=2,
         min_value=Decimal("0.00"),
     )
+    category = serializers.ChoiceField(
+        choices=InventoryProduct.Category.choices,
+        default=InventoryProduct.Category.OTROS,
+    )
 
     class Meta:
         model = InventoryProduct
-        fields = ("id", "name", "quantity", "unitPrice")
+        fields = ("id", "name", "quantity", "unitPrice", "category")
 
     def validate_name(self, value: str) -> str:
         normalized_name = str(value or "").strip()
