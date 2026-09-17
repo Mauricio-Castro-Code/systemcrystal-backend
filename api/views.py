@@ -104,7 +104,6 @@ from .serializers import (
     LoginSerializer,
     OrderAssignmentSerializer,
     OrderExtraCostSerializer,
-    OrderMapsLinkSerializer,
     OrderRouteConstraintSerializer,
     OrderStatusUpdateSerializer,
     QuotationNoteSerializer,
@@ -1280,34 +1279,6 @@ class OrderRouteConstraintView(APIView):
     def delete(self, request, order_id):
         order = self._get_owned_order(request, order_id)
         clear_order_route_constraint(order)
-        return Response(build_driver_route_stop(order))
-
-
-class OrderMapsLinkView(APIView):
-    """Link de Maps que el cliente compartió, capturado por el chofer.
-
-    Se usa para el botón "Ver en mapa" y, sobre todo, para que la optimización de
-    ruta use esas coordenadas exactas en vez de adivinar con el texto de la
-    dirección cuando ésta resulta ambigua o mal geocodificada.
-    """
-
-    permission_classes = [IsChofer]
-
-    def post(self, request, order_id):
-        order = get_object_or_404(Order.objects.select_related("quotation"), order_id=order_id)
-        if order.assigned_driver_id != request.user.id:
-            raise PermissionDenied("Este pedido no está asignado a tu ruta.")
-
-        serializer = OrderMapsLinkSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-
-        assign_order_driver(
-            order,
-            driver=order.assigned_driver,
-            maps_url=serializer.validated_data["url"],
-            changed_by=request.user,
-        )
-
         return Response(build_driver_route_stop(order))
 
 

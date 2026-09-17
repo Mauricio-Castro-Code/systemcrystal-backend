@@ -340,10 +340,6 @@ class DriverRouteAddOrderSerializer(serializers.Serializer):
     orderId = serializers.CharField(max_length=20)
 
 
-class OrderMapsLinkSerializer(serializers.Serializer):
-    url = serializers.URLField(max_length=500)
-
-
 class ClientCreateSerializer(serializers.Serializer):
     clientName = serializers.CharField(max_length=120)
     phoneNumber = serializers.CharField(max_length=25, allow_blank=True, default="")
