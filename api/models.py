@@ -251,6 +251,8 @@ class InventoryProduct(TimestampedModel):
     class Category(models.TextChoices):
         VAJILLA = "VAJILLA", "Vajilla"
         MOBILIARIO = "MOBILIARIO", "Mobiliario"
+        MANTELERIA = "MANTELERIA", "Mantelería"
+        CARPAS = "CARPAS", "Carpas"
         OTROS = "OTROS", "Otros"
 
     name = models.CharField(max_length=120)
