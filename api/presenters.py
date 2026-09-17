@@ -78,6 +78,7 @@ def build_quotation_note(quotation) -> dict:
             "equipment": item.equipment,
             "unitPrice": item.unit_price,
             "total": item.total,
+            "productId": item.inventory_product_id,
         }
         for item in quotation.equipment_items.all()
     ]

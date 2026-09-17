@@ -335,6 +335,13 @@ class QuotationItem(models.Model):
         related_name="equipment_items",
         on_delete=models.CASCADE,
     )
+    inventory_product = models.ForeignKey(
+        InventoryProduct,
+        related_name="quotation_items",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+    )
     quantity = models.PositiveIntegerField(default=0)
     equipment = models.CharField(max_length=120)
     unit_price = models.DecimalField(max_digits=12, decimal_places=2, default=0)

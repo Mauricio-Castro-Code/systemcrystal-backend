@@ -138,6 +138,7 @@ class QuotationEquipmentItemSerializer(serializers.Serializer):
     equipment = serializers.CharField(max_length=120, allow_blank=True)
     unitPrice = serializers.DecimalField(max_digits=12, decimal_places=2)
     total = serializers.DecimalField(max_digits=12, decimal_places=2, required=False)
+    productId = serializers.IntegerField(required=False, allow_null=True, default=None)
 
 
 class QuotationSummarySerializer(serializers.Serializer):
@@ -245,6 +246,14 @@ class QuotationNoteSerializer(serializers.Serializer):
 
     def normalize_items(self, equipment_items: list[dict]) -> list[dict]:
         normalized_items = []
+        requested_product_ids = {
+            item["productId"] for item in equipment_items if item.get("productId")
+        }
+        valid_product_ids = set(
+            InventoryProduct.objects.filter(pk__in=requested_product_ids).values_list(
+                "pk", flat=True
+            )
+        )
 
         for item in equipment_items:
             quantity = int(item["quantity"])
@@ -254,6 +263,8 @@ class QuotationNoteSerializer(serializers.Serializer):
                 TWO_DECIMAL_PLACES,
                 rounding=ROUND_HALF_UP,
             )
+            product_id = item.get("productId")
+            product_id = product_id if product_id in valid_product_ids else None
 
             if not equipment and quantity == 0 and unit_price == Decimal("0.00"):
                 continue
@@ -264,6 +275,7 @@ class QuotationNoteSerializer(serializers.Serializer):
                     "equipment": equipment,
                     "unitPrice": unit_price,
                     "total": total,
+                    "productId": product_id,
                 }
             )
 

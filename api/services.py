@@ -108,6 +108,7 @@ def replace_equipment_items(quotation: Quotation, equipment_items: list[dict]) -
         [
             QuotationItem(
                 quotation=quotation,
+                inventory_product_id=item.get("productId"),
                 quantity=item["quantity"],
                 equipment=item["equipment"],
                 unit_price=item["unitPrice"],
