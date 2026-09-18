@@ -12,7 +12,7 @@ import csv
 import sys
 import unicodedata
 
-from django.core.management.base import BaseCommand, CommandError
+from django.core.management.base import BaseCommand
 
 from api.models import Quotation
 

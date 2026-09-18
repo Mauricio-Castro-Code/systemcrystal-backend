@@ -88,7 +88,7 @@ class Command(BaseCommand):
                     if apply and client:
                         q.client = client
                         q.save(update_fields=["client"])
-                        self.stdout.write(self.style.SUCCESS(f"    ✓ Reasignada"))
+                        self.stdout.write(self.style.SUCCESS("    ✓ Reasignada"))
 
                 self.stdout.write("")
 

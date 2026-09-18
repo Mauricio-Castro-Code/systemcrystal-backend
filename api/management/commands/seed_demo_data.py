@@ -1,5 +1,6 @@
+from django.conf import settings
 from django.contrib.auth import get_user_model
-from django.core.management.base import BaseCommand
+from django.core.management.base import BaseCommand, CommandError
 
 from api.models import Client
 
@@ -54,6 +55,8 @@ class Command(BaseCommand):
     help = "Crea un usuario administrador de desarrollo y clientes demo."
 
     def handle(self, *args, **options):
+        if not settings.DEBUG:
+            raise CommandError("Los datos demo solo se pueden crear con DJANGO_DEBUG=True.")
         user_model = get_user_model()
         admin_user, created = user_model.objects.get_or_create(
             username="admin",

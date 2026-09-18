@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import re
 import warnings
+from zipfile import ZipFile, BadZipFile
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 
@@ -76,6 +77,15 @@ def read_note_excel(file_obj) -> dict:
         ) from error
 
     try:
+        with ZipFile(file_obj) as archive:
+            entries = archive.infolist()
+            if len(entries) > 1000 or sum(entry.file_size for entry in entries) > 25 * 1024 * 1024:
+                raise NoteImportError("El contenido descomprimido del Excel es demasiado grande.")
+        file_obj.seek(0)
+    except (BadZipFile, OSError) as error:
+        raise NoteImportError("El archivo no es un Excel (.xlsx) válido.") from error
+
+    try:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             workbook = load_workbook(file_obj, data_only=True)
@@ -84,6 +94,10 @@ def read_note_excel(file_obj) -> dict:
             "El archivo no es un Excel (.xlsx) valido o esta danado. "
             "Usa la plantilla de nota de Crystal y guardala como .xlsx.",
         ) from error
+
+    if not workbook.worksheets:
+        workbook.close()
+        raise NoteImportError("El Excel no contiene una hoja de cálculo.")
 
     worksheet = workbook.worksheets[0]
 
@@ -172,6 +186,7 @@ def read_note_excel(file_obj) -> dict:
         "equipmentItems": equipment_items,
     }
 
+    workbook.close()
     return {
         "folio": folio,
         "noteDate": note_date,

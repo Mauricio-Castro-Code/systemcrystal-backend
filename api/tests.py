@@ -96,6 +96,7 @@ class AuthApiTests(APITestCase):
             username="admin",
             email="admin@orderflow.com",
             password="OrderFlow123",
+            is_staff=True,
             first_name="Administrador",
             last_name="OrderFlow",
         )
@@ -134,7 +135,7 @@ class AuthApiTests(APITestCase):
             reverse("api-register"),
             {
                 "email": "nuevo@orderflow.com",
-                "password": "OrderFlow123",
+                "password": "Roble!9274Nube",
                 "registrationKey": "ClaveCrystal2026",
             },
             format="json",
@@ -150,7 +151,7 @@ class AuthApiTests(APITestCase):
             reverse("api-register"),
             {
                 "email": "bloqueado@orderflow.com",
-                "password": "OrderFlow123",
+                "password": "Roble!9274Nube",
                 "registrationKey": "ClaveIncorrecta",
             },
             format="json",
@@ -166,6 +167,7 @@ class AuthenticatedApiTestCase(APITestCase):
             username="admin",
             email="admin@orderflow.com",
             password="OrderFlow123",
+            is_staff=True,
             first_name="Administrador",
             last_name="OrderFlow",
         )

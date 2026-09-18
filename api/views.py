@@ -1,19 +1,20 @@
 from __future__ import annotations
 
-from collections import defaultdict
-from datetime import date as calendar_date, datetime, time, timedelta
-from io import BytesIO
 import re
 import unicodedata
+from collections import defaultdict
+from datetime import date as calendar_date
+from datetime import datetime, time, timedelta
 
 from django.conf import settings
 from django.contrib.auth import authenticate, get_user_model
 from django.core.cache import cache
-from django.db import transaction
+from django.db import connection, transaction
 from django.db.models import prefetch_related_objects
 from django.http import HttpResponse
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
+from django.utils.crypto import constant_time_compare
 from django.utils.dateparse import parse_date
 from rest_framework import status
 from rest_framework.authentication import TokenAuthentication
@@ -24,36 +25,10 @@ from rest_framework.exceptions import (
     PermissionDenied,
     ValidationError,
 )
-from rest_framework.permissions import AllowAny, BasePermission
+from rest_framework.permissions import AllowAny, IsAdminUser, IsAuthenticated
 from rest_framework.response import Response
+from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
-
-
-class IsAdminUser(BasePermission):
-    def has_permission(self, request, view):
-        return bool(request.user and request.user.is_authenticated and request.user.is_staff)
-
-
-class IsChofer(BasePermission):
-    def has_permission(self, request, view):
-        from .models import UserProfile, get_user_role
-
-        return bool(
-            request.user
-            and request.user.is_authenticated
-            and get_user_role(request.user) == UserProfile.Role.CHOFER
-        )
-
-
-class IsAdminOrVentas(BasePermission):
-    def has_permission(self, request, view):
-        from .models import UserProfile, get_user_role
-
-        return bool(
-            request.user
-            and request.user.is_authenticated
-            and get_user_role(request.user) in (UserProfile.Role.ADMIN, UserProfile.Role.VENTAS)
-        )
 
 from .client_directory import (
     build_client_directory_entries,
@@ -77,7 +52,6 @@ from .models import (
     Order,
     OrderExtraCost,
     Quotation,
-    QuotationItem,
     RouteOptimizationRun,
     UserProfile,
     get_user_role,
@@ -85,7 +59,7 @@ from .models import (
     set_user_role,
 )
 from .note_import import NoteImportError, read_note_excel
-from .route_optimization import RouteEngineError
+from .permissions import IsAdminOrVentas, IsChofer
 from .presenters import (
     build_dashboard_overview,
     build_driver_route,
@@ -95,6 +69,7 @@ from .presenters import (
     build_team_member,
     build_user_session,
 )
+from .route_optimization import RouteEngineError
 from .serializers import (
     ClientAddressSerializer,
     ClientCreateSerializer,
@@ -121,11 +96,10 @@ from .services import (
     delete_order_and_quotation,
     run_route_optimization,
     set_order_route_constraint,
-    update_order_statuses,
     update_order_from_note,
+    update_order_statuses,
     update_quotation_from_note,
 )
-
 
 User = get_user_model()
 def get_order_base_queryset():
@@ -146,6 +120,11 @@ def get_order_base_queryset():
         'CAST(NULLIF(REGEXP_REPLACE(SPLIT_PART("api_order"."order_id",\'-\',1),'
         "'[^0-9]','','g'),'') AS INTEGER)"
     )
+
+    if connection.vendor == "sqlite":
+        # SQLite interpreta el prefijo numérico de los folios heredados al convertir.
+        _year_sql = "CAST(substr(api_order.order_id, instr(api_order.order_id, '-') + 1) AS INTEGER)"
+        _num_sql = 'CAST("api_order"."order_id" AS INTEGER)'
 
     return (
         Order.objects.select_related("quotation")
@@ -315,6 +294,8 @@ class HealthCheckView(APIView):
 
 
 class LoginView(APIView):
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "login"
     permission_classes = [AllowAny]
     authentication_classes = []
 
@@ -326,12 +307,9 @@ class LoginView(APIView):
         password = serializer.validated_data["password"]
         candidate = resolve_user_from_identifier(identifier)
 
-        if not candidate:
-            raise AuthenticationFailed("Credenciales invalidas.")
-
         user = authenticate(
             request=request,
-            username=candidate.username,
+            username=candidate.username if candidate else identifier,
             password=password,
         )
 
@@ -343,6 +321,8 @@ class LoginView(APIView):
 
 
 class RegisterView(APIView):
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "register"
     permission_classes = [AllowAny]
     authentication_classes = []
 
@@ -353,9 +333,10 @@ class RegisterView(APIView):
         email = serializer.validated_data["email"].strip().lower()
         password = serializer.validated_data["password"]
         registration_key = serializer.validated_data["registrationKey"].strip()
-        role = serializer.validated_data.get("role", "ventas")
 
-        if registration_key != settings.REGISTRATION_ACCESS_KEY:
+        if not settings.REGISTRATION_ACCESS_KEY or not constant_time_compare(
+            registration_key, settings.REGISTRATION_ACCESS_KEY,
+        ):
             raise ValidationError(
                 {"registrationKey": "La clave de registro no es valida."},
             )
@@ -371,7 +352,7 @@ class RegisterView(APIView):
             email=email,
             password=password,
             first_name=build_name_from_email(email),
-            is_staff=(role == "admin"),
+            is_staff=False,
         )
         token = Token.objects.create(user=user)
 
@@ -382,6 +363,8 @@ class RegisterView(APIView):
 
 
 class CurrentSessionView(APIView):
+    permission_classes = [IsAuthenticated]
+
     def get(self, request):
         token_key = (
             request.auth.key
@@ -392,6 +375,8 @@ class CurrentSessionView(APIView):
 
 
 class LogoutView(APIView):
+    permission_classes = [IsAuthenticated]
+
     authentication_classes = [TokenAuthentication]
 
     def post(self, request):
@@ -444,9 +429,10 @@ class TeamMemberListCreateView(APIView):
 class TeamMemberDetailView(APIView):
     permission_classes = [IsAdminUser]
 
+    @transaction.atomic
     def patch(self, request, user_id: int):
         user = get_object_or_404(User, pk=user_id)
-        serializer = TeamMemberUpdateSerializer(data=request.data)
+        serializer = TeamMemberUpdateSerializer(instance=user, data=request.data)
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
 
@@ -469,12 +455,17 @@ class TeamMemberDetailView(APIView):
                     {"isActive": "No puedes desactivar a otro administrador."},
                 )
             user.is_active = bool(data["isActive"])
+            if not user.is_active:
+                Token.objects.filter(user=user).delete()
 
         user.save()
 
         if data.get("password"):
+            if target_is_other_admin:
+                raise PermissionDenied("No puedes cambiar la contraseña de otro administrador.")
             user.set_password(data["password"])
             user.save(update_fields=["password"])
+            Token.objects.filter(user=user).delete()
 
         if "role" in data:
             if user.pk == request.user.pk and data["role"] != UserProfile.Role.ADMIN:
@@ -761,9 +752,9 @@ class QuotationExcelExportView(APIView):
         try:
             file_bytes, filename = export_quotation_excel(quotation)
         except FileNotFoundError as error:
-            raise NotFound(str(error)) from error
+            raise NotFound("No se encontró la plantilla del documento.") from error
         except ExcelTemplateExportError as error:
-            raise ValidationError(str(error)) from error
+            raise ValidationError("No fue posible generar el documento.") from error
 
         return build_excel_download_response(file_bytes, filename)
 
@@ -780,9 +771,9 @@ class QuotationPdfExportView(APIView):
         try:
             file_bytes, filename = export_quotation_pdf(quotation)
         except FileNotFoundError as error:
-            raise NotFound(str(error)) from error
+            raise NotFound("No se encontró la plantilla del documento.") from error
         except ExcelTemplateExportError as error:
-            raise ValidationError(str(error)) from error
+            raise ValidationError("No fue posible generar el documento.") from error
 
         return build_pdf_download_response(file_bytes, filename)
 
@@ -831,8 +822,11 @@ class OrderImportView(APIView):
                 {"file": "El archivo debe ser .xlsx (la plantilla de nota de Crystal)."},
             )
 
+        if upload.size > 5 * 1024 * 1024:
+            raise ValidationError({"file": "El Excel no debe superar 5 MB."})
+
         try:
-            parsed = read_note_excel(BytesIO(upload.read()))
+            parsed = read_note_excel(upload)
         except NoteImportError as error:
             raise ValidationError({"file": str(error)}) from error
 
@@ -912,7 +906,9 @@ class OrderArchiveListView(APIView):
         return Response(payload)
 
     def get_queryset(self):
-        orders = list(get_order_base_queryset())
+        orders = list(get_order_base_queryset().filter(
+            operational_status=Order.OperationalStatus.RECOGIDO,
+        ))
         folder_key = request_folder_key(self.request)
         return filter_orders_by_folder(orders, folder_key)
 
@@ -1009,9 +1005,9 @@ class OrderExcelExportView(APIView):
         try:
             file_bytes, filename = export_order_excel(order)
         except FileNotFoundError as error:
-            raise NotFound(str(error)) from error
+            raise NotFound("No se encontró la plantilla del documento.") from error
         except ExcelTemplateExportError as error:
-            raise ValidationError(str(error)) from error
+            raise ValidationError("No fue posible generar el documento.") from error
 
         return build_excel_download_response(file_bytes, filename)
 
@@ -1023,14 +1019,16 @@ class OrderPdfExportView(APIView):
         try:
             file_bytes, filename = export_order_pdf(order)
         except FileNotFoundError as error:
-            raise NotFound(str(error)) from error
+            raise NotFound("No se encontró la plantilla del documento.") from error
         except ExcelTemplateExportError as error:
-            raise ValidationError(str(error)) from error
+            raise ValidationError("No fue posible generar el documento.") from error
 
         return build_pdf_download_response(file_bytes, filename)
 
 
 class OrderStatusUpdateView(APIView):
+    permission_classes = [IsAuthenticated]
+
     # Estados operativos que un chofer puede fijar desde la calle.
     CHOFER_ALLOWED_STATUSES = {
         Order.OperationalStatus.EN_CAMINO,

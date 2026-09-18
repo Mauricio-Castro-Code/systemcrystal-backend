@@ -1,11 +1,19 @@
 from __future__ import annotations
 
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import ROUND_HALF_UP, Decimal
 
+from django.contrib.auth import get_user_model
+from django.contrib.auth.password_validation import validate_password
+from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import serializers
 
-from .models import Client, InventoryProduct, Order, OrderRouteConstraint, UserProfile, normalize_text
-
+from .models import (
+    InventoryProduct,
+    Order,
+    OrderRouteConstraint,
+    UserProfile,
+    normalize_text,
+)
 
 TWO_DECIMAL_PLACES = Decimal("0.01")
 TAX_RATE = Decimal("0.16")
@@ -20,18 +28,30 @@ class LoginSerializer(serializers.Serializer):
     password = serializers.CharField(trim_whitespace=False, write_only=True)
 
 
-class RegisterSerializer(serializers.Serializer):
-    ROLE_ADMIN = "admin"
-    ROLE_VENTAS = "ventas"
-    ROLE_CHOICES = [(ROLE_ADMIN, "Admin"), (ROLE_VENTAS, "Ventas")]
+class PasswordValidationMixin:
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        password = attrs.get("password")
+        if password:
+            user = self.instance or get_user_model()(
+                username=attrs.get("email", ""), email=attrs.get("email", ""),
+                first_name=attrs.get("displayName", ""),
+            )
+            try:
+                validate_password(password, user=user)
+            except DjangoValidationError as error:
+                raise serializers.ValidationError({"password": error.messages}) from error
+        return attrs
 
+
+class RegisterSerializer(PasswordValidationMixin, serializers.Serializer):
     email = serializers.EmailField()
     password = serializers.CharField(min_length=8, trim_whitespace=False, write_only=True)
     registrationKey = serializers.CharField(min_length=6, trim_whitespace=True, write_only=True)
-    role = serializers.ChoiceField(choices=ROLE_CHOICES, default=ROLE_VENTAS)
+    role = serializers.ChoiceField(choices=["ventas"], default="ventas")
 
 
-class TeamMemberCreateSerializer(serializers.Serializer):
+class TeamMemberCreateSerializer(PasswordValidationMixin, serializers.Serializer):
     displayName = serializers.CharField(max_length=120, allow_blank=True, required=False)
     email = serializers.EmailField()
     password = serializers.CharField(min_length=8, trim_whitespace=False, write_only=True)
@@ -41,7 +61,7 @@ class TeamMemberCreateSerializer(serializers.Serializer):
     )
 
 
-class TeamMemberUpdateSerializer(serializers.Serializer):
+class TeamMemberUpdateSerializer(PasswordValidationMixin, serializers.Serializer):
     displayName = serializers.CharField(max_length=120, allow_blank=True, required=False)
     role = serializers.ChoiceField(choices=UserProfile.Role.choices, required=False)
     isActive = serializers.BooleanField(required=False)
@@ -52,24 +72,6 @@ class TeamMemberUpdateSerializer(serializers.Serializer):
         required=False,
         allow_blank=True,
     )
-
-
-class ClientSerializer(serializers.ModelSerializer):
-    id = serializers.CharField(source="code")
-    clientName = serializers.CharField(source="client_name")
-    contactPerson = serializers.CharField(source="contact_person")
-    phoneNumber = serializers.CharField(source="phone_number")
-
-    class Meta:
-        model = Client
-        fields = (
-            "id",
-            "clientName",
-            "contactPerson",
-            "phoneNumber",
-            "email",
-            "address",
-        )
 
 
 class InventoryItemSerializer(serializers.ModelSerializer):
@@ -295,6 +297,13 @@ class OrderAssignmentSerializer(serializers.Serializer):
         required=False,
         allow_blank=True,
     )
+
+    def validate_mapsUrl(self, value):
+        from .route_optimization import is_allowed_maps_url
+
+        if value and not is_allowed_maps_url(value):
+            raise serializers.ValidationError("Usa un enlace HTTPS de Google Maps.")
+        return value
 
     def validate(self, attrs):
         if "driverId" not in attrs and "mapsUrl" not in attrs:

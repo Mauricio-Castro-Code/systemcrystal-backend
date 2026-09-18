@@ -31,7 +31,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-RUN python manage.py collectstatic --noinput || true
+RUN DJANGO_LOAD_ENV=False DJANGO_DEBUG=True python manage.py collectstatic --noinput
 
 # Pre-initialize LibreOffice user profile so the first real request is not slow.
 RUN HOME=/tmp soffice --headless --norestore --nofirststartwizard --version || true

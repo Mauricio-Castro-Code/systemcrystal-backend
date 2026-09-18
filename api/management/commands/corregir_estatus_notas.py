@@ -17,7 +17,6 @@ import datetime
 
 from django.core.management.base import BaseCommand
 from django.db import transaction
-from django.utils import timezone
 
 from api.models import Order, OrderWorkflowEvent
 

@@ -1,0 +1,15 @@
+.env
+.env.*
+!.env.example
+.git
+venv
+.venv
+env
+__pycache__
+*.py[cod]
+*.sqlite3
+*.log
+var
+staticfiles
+.DS_Store
+*.broken_bak

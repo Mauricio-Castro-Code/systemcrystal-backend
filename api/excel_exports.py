@@ -268,12 +268,13 @@ def render_document_bundle(
     cell_writes: list[DocumentCellWrite],
 ) -> GeneratedDocumentBundle:
     from openpyxl import load_workbook
-    from openpyxl.worksheet.page import PageMargins, PrintPageSetup
 
+    # Los folios heredados pueden contener separadores o comillas; nunca son rutas.
+    safe_stem = re.sub(r"[^A-Za-z0-9_-]", "_", str(output_stem))[:100] or "documento"
     with tempfile.TemporaryDirectory(prefix="crystal-documents-") as tmp:
         tmp_path = Path(tmp)
-        excel_output_path = tmp_path / f"{output_stem}.xlsx"
-        pdf_output_path = tmp_path / f"{output_stem}.pdf"
+        excel_output_path = tmp_path / f"{safe_stem}.xlsx"
+        pdf_output_path = tmp_path / f"{safe_stem}.pdf"
 
         # openpyxl emite warnings ruidosos por imagenes WMF de la plantilla.
         with warnings.catch_warnings():
@@ -346,6 +347,7 @@ def _apply_cell_writes(ws, cell_writes: list[DocumentCellWrite]) -> None:
             cell.value = None
         elif cw.kind == "text":
             cell.value = str(cw.value or "")
+            cell.data_type = "s"  # El texto del usuario nunca se evalúa como fórmula.
         elif cw.kind == "number":
             cell.value = _to_float(cw.value)
         elif cw.kind == "date":
@@ -482,7 +484,6 @@ def _patch_page_setup(sheet_bytes: bytes) -> bytes:
         return sheet_bytes
 
     # Quitar fitToPage del pageSetUpPr para que el scale explicito tenga efecto.
-    had_fittopage = _PAGE_SETUP_PR_PATTERN.search(text)
     text = _PAGE_SETUP_PR_PATTERN.sub("", text)
 
     replacement = (
@@ -496,9 +497,6 @@ def _patch_page_setup(sheet_bytes: bytes) -> bytes:
     else:
         # Insert before </worksheet> if no pageSetup tag exists.
         text = text.replace("</worksheet>", replacement + "</worksheet>", 1)
-
-    import sys
-    print(f"[PDF PATCH] fitToPage removed: {bool(had_fittopage)}, scale={_FIXED_PAGE_SCALE}%", file=sys.stderr)
 
     return text.encode("utf-8")
 

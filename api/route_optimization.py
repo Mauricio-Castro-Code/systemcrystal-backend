@@ -17,6 +17,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass
+from urllib.parse import urljoin, urlsplit
 
 import requests
 from django.conf import settings
@@ -198,6 +199,22 @@ _PRECISE_PIN_PATTERN = re.compile(r"!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)")
 _VIEWPORT_PATTERN = re.compile(r"@(-?\d+\.\d+),(-?\d+\.\d+)")
 _QUERY_PATTERN = re.compile(r"[?&]q=(-?\d+\.\d+),(-?\d+\.\d+)")
 
+def is_allowed_maps_url(url: str) -> bool:
+    try:
+        parts = urlsplit(url)
+        return (
+            parts.scheme == "https"
+            and parts.hostname in {
+                "maps.app.goo.gl", "goo.gl", "maps.google.com",
+                "www.google.com", "google.com", "www.google.com.mx", "maps.google.com.mx",
+            }
+            and parts.port in (None, 443)
+            and parts.username is None and parts.password is None
+        )
+    except ValueError:
+        return False
+
+
 MAPS_LINK_CACHE_TTL_SECONDS = 60 * 60 * 24  # el link de un cliente no cambia de coordenadas
 
 
@@ -210,7 +227,7 @@ def resolve_maps_url_coordinates(url: str) -> tuple[float, float] | None:
     bloquea: quien llama simplemente cae de vuelta a geocodificar la dirección de texto.
     """
     normalized_url = str(url or "").strip()
-    if not normalized_url:
+    if not is_allowed_maps_url(normalized_url):
         return None
 
     cache_key = f"maps_url_coords:{hashlib.sha256(normalized_url.encode('utf-8')).hexdigest()}"
@@ -220,13 +237,27 @@ def resolve_maps_url_coordinates(url: str) -> tuple[float, float] | None:
 
     coordinates = None
     try:
-        response = requests.get(
-            normalized_url,
-            allow_redirects=True,
-            timeout=10,
-            headers={"User-Agent": "Mozilla/5.0"},
-        )
-        final_url = response.url
+        final_url = normalized_url
+        for _ in range(5):
+            if not is_allowed_maps_url(final_url):
+                return None
+            response = requests.get(
+                final_url, allow_redirects=False, stream=True, timeout=10,
+                headers={"User-Agent": "Mozilla/5.0"},
+            )
+            try:
+                if response.status_code in (301, 302, 303, 307, 308):
+                    final_url = urljoin(final_url, response.headers.get("Location", ""))
+                    continue
+                response.raise_for_status()
+                final_url = response.url
+                if not is_allowed_maps_url(final_url):
+                    return None
+                break
+            finally:
+                response.close()
+        else:
+            return None
         match = (
             _PRECISE_PIN_PATTERN.search(final_url)
             or _VIEWPORT_PATTERN.search(final_url)
@@ -235,7 +266,7 @@ def resolve_maps_url_coordinates(url: str) -> tuple[float, float] | None:
         if match:
             coordinates = (float(match.group(1)), float(match.group(2)))
     except requests.RequestException:
-        logger.exception("No se pudo resolver el link de Maps: %s", normalized_url)
+        logger.warning("No se pudo resolver el enlace de Maps.")
 
     cache.set(cache_key, list(coordinates) if coordinates else "none", MAPS_LINK_CACHE_TTL_SECONDS)
     return coordinates
@@ -287,7 +318,7 @@ def check_geocode_confidence(address: str) -> str | None:
             elif location_type in _IMPRECISE_LOCATION_TYPES:
                 warning = f"Google solo ubicó el área aproximada, no el domicilio exacto: {formatted}"
     except requests.RequestException:
-        logger.exception("No se pudo verificar la confianza de geocodificación: %s", normalized_address)
+        logger.warning("No se pudo verificar la confianza de geocodificación.")
 
     cache.set(cache_key, warning or "none", GEOCODE_CHECK_CACHE_TTL_SECONDS)
     return warning
@@ -343,7 +374,7 @@ def fetch_route_matrix(
 
     if response.status_code != 200:
         detail = _describe_google_error(response)
-        logger.error("Google Routes API respondió %s: %s", response.status_code, response.text)
+        logger.error("Google Routes API respondió %s.", response.status_code)
         raise RouteEngineError(f"El servicio de mapas rechazó la solicitud: {detail}")
 
     try:

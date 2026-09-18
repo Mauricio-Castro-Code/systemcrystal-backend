@@ -19,7 +19,8 @@ Backend inicial en Django para System Crystal, alineado con los modelos que hoy 
    SUPABASE_DATABASE_URL=postgresql://postgres.<ref>:<password>@aws-0-us-east-1.pooler.supabase.com:5432/postgres
    ```
    El SSL queda forzado por default (`DB_SSL_REQUIRE=True`). Si dejas la URL vacia, el backend cae a SQLite local (`db.sqlite3`) para desarrollo.
-4. Define `REGISTRATION_ACCESS_KEY` para controlar quien puede crear usuarios.
+4. Genera una `DJANGO_SECRET_KEY` aleatoria de al menos 50 caracteres. El arranque en producción rechaza claves ausentes o inseguras. `DJANGO_DEBUG` ahora es `False` por defecto; para desarrollo local configura `DJANGO_DEBUG=True` y `DJANGO_SECURE_SSL_REDIRECT=False`.
+   Deja `REGISTRATION_ACCESS_KEY` vacía para deshabilitar el registro público, o configura una clave privada para crear usuarios de ventas. Los administradores se crean con `python manage.py createsuperuser` o desde Equipo con una sesión administradora.
 5. Corre `python3 manage.py migrate` y listo — Django crea las tablas en Supabase.
 6. Si quieres usar otra plantilla Excel, define `NOTE_EXCEL_TEMPLATE_PATH` y/o `QUOTATION_EXCEL_TEMPLATE_PATH`. Si los dejas vacios, el backend usa `templates/excel/Nota.xlsx`.
 
@@ -58,6 +59,8 @@ python3 manage.py runserver
 
 ## Credenciales demo
 
+`seed_demo_data` solo funciona con `DJANGO_DEBUG=True`. Nunca usar estas credenciales en producción.
+
 - Usuario: `admin`
 - Password: `OrderFlow123`
 
@@ -83,3 +86,20 @@ python3 manage.py runserver
 ## Contrato de datos
 
 Las respuestas de clientes, cotizaciones y pedidos siguen la misma forma de datos que hoy consumen los servicios del frontend, para que la sustitucion de `localStorage` por llamadas HTTP sea directa.
+
+## Seguridad y pruebas
+
+- HTTPS y cookies seguras están habilitados por defecto fuera de desarrollo. Si el servicio está detrás de un proxy confiable que reescribe `X-Forwarded-Proto` (verificar en el alojamiento), configurar `DJANGO_TRUST_PROXY_SSL_HEADER=True` para evitar bucles de redirección.
+- Las rutas generales requieren ventas o administrador. Los choferes conservan sesión, ruta y actualización operativa de sus propias notas; no pueden usar la actualización masiva ni modificar cobros.
+- El login tiene un límite básico de 10 solicitudes/minuto y el registro de 5/hora por IP. Configurar `DJANGO_NUM_PROXIES` según la infraestructura. La caché local se separa por proceso: para protección en producción se necesita también un límite en el proxy/WAF y una caché compartida; el throttling de DRF no garantiza protección contra fuerza bruta.
+- Cambiar una contraseña o desactivar un usuario revoca sus tokens. Los tokens actuales no tienen caducidad automática.
+- `.dockerignore` excluye secretos, bases locales, entornos virtuales y exportaciones de la imagen.
+
+Pruebas sin leer `.env` ni conectar a Supabase:
+
+```bash
+python manage.py test api --settings=config.test_settings --noinput
+python manage.py makemigrations --check --dry-run --settings=config.test_settings
+```
+
+`config.test_settings` utiliza SQLite en memoria y un hash rápido únicamente para pruebas; nunca usarlo para desplegar. Antes de publicar, ejecutar `python manage.py check --deploy` con la configuración real y probar también contra PostgreSQL de staging.

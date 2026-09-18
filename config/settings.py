@@ -2,6 +2,8 @@ import os
 
 from pathlib import Path
 
+from django.core.exceptions import ImproperlyConfigured
+
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -69,14 +71,26 @@ def get_int(name: str, default: int) -> int:
         return default
 
 
-load_env_file()
+if get_bool("DJANGO_LOAD_ENV", True):
+    load_env_file()
 
 SECRET_KEY = os.getenv(
     "DJANGO_SECRET_KEY",
     "django-insecure-change-me-before-production",
 )
 
-DEBUG = get_bool("DJANGO_DEBUG", True)
+DEBUG = get_bool("DJANGO_DEBUG", False)
+
+if not DEBUG and (len(SECRET_KEY) < 50 or SECRET_KEY.startswith("django-insecure-")):
+    raise ImproperlyConfigured("Configura DJANGO_SECRET_KEY con al menos 50 caracteres en producción.")
+
+SECURE_SSL_REDIRECT = get_bool("DJANGO_SECURE_SSL_REDIRECT", not DEBUG)
+SESSION_COOKIE_SECURE = not DEBUG
+CSRF_COOKIE_SECURE = not DEBUG
+SECURE_HSTS_SECONDS = get_int("DJANGO_SECURE_HSTS_SECONDS", 0 if DEBUG else 31536000)
+# Activar solo si el proxy elimina/reemplaza la cabecera enviada por el cliente.
+if get_bool("DJANGO_TRUST_PROXY_SSL_HEADER", False):
+    SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 
 ALLOWED_HOSTS = get_list("DJANGO_ALLOWED_HOSTS", ["localhost", "127.0.0.1"])
 
@@ -153,11 +167,6 @@ def build_database_config() -> dict:
             "NAME": BASE_DIR / "db.sqlite3",
         }
 
-    print(
-        "[SystemCrystal] Conectando a Supabase Postgres "
-        f"({database_url.split('@', 1)[-1].split('/', 1)[0]}).",
-    )
-
     import dj_database_url
 
     config = dj_database_url.parse(
@@ -213,8 +222,10 @@ REST_FRAMEWORK = {
         "rest_framework.authentication.TokenAuthentication",
     ],
     "DEFAULT_PERMISSION_CLASSES": [
-        "rest_framework.permissions.IsAuthenticated",
+        "api.permissions.IsAdminOrVentas",
     ],
+    "DEFAULT_THROTTLE_RATES": {"login": "10/min", "register": "5/hour"},
+    "NUM_PROXIES": get_int("DJANGO_NUM_PROXIES", 0),
     "COERCE_DECIMAL_TO_STRING": False,
 }
 
@@ -231,7 +242,7 @@ CSRF_TRUSTED_ORIGINS = get_list(
 
 REGISTRATION_ACCESS_KEY = os.getenv(
     "REGISTRATION_ACCESS_KEY",
-    "CrystalRegister2026",
+    "",
 )
 
 DEFAULT_NOTE_EXCEL_TEMPLATE_PATH = BASE_DIR / "templates" / "excel" / "Nota.xlsx"

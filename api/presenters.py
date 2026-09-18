@@ -426,7 +426,9 @@ def _build_navigation_url(order) -> str:
     de la nota -- así "Ver en mapa" funciona para todas las paradas, no solo las
     que alguien se acordó de capturar.
     """
-    if order.maps_url:
+    from .route_optimization import is_allowed_maps_url
+
+    if is_allowed_maps_url(order.maps_url):
         return order.maps_url
 
     quotation = order.quotation
