@@ -88,9 +88,14 @@ SECURE_SSL_REDIRECT = get_bool("DJANGO_SECURE_SSL_REDIRECT", not DEBUG)
 SESSION_COOKIE_SECURE = not DEBUG
 CSRF_COOKIE_SECURE = not DEBUG
 SECURE_HSTS_SECONDS = get_int("DJANGO_SECURE_HSTS_SECONDS", 0 if DEBUG else 31536000)
-# Activar solo si el proxy elimina/reemplaza la cabecera enviada por el cliente.
-if get_bool("DJANGO_TRUST_PROXY_SSL_HEADER", False):
-    SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+# Railway termina TLS y fija X-Forwarded-Proto=https en su proxy público.
+# Fuera de Railway se requiere habilitar explícitamente un proxy confiable.
+TRUST_PROXY_SSL_HEADER = get_bool(
+    "DJANGO_TRUST_PROXY_SSL_HEADER", bool(os.getenv("RAILWAY_PROJECT_ID")),
+)
+SECURE_PROXY_SSL_HEADER = (
+    ("HTTP_X_FORWARDED_PROTO", "https") if TRUST_PROXY_SSL_HEADER else None
+)
 
 ALLOWED_HOSTS = get_list("DJANGO_ALLOWED_HOSTS", ["localhost", "127.0.0.1"])
 

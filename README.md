@@ -89,7 +89,7 @@ Las respuestas de clientes, cotizaciones y pedidos siguen la misma forma de dato
 
 ## Seguridad y pruebas
 
-- HTTPS y cookies seguras están habilitados por defecto fuera de desarrollo. Si el servicio está detrás de un proxy confiable que reescribe `X-Forwarded-Proto` (verificar en el alojamiento), configurar `DJANGO_TRUST_PROXY_SSL_HEADER=True` para evitar bucles de redirección.
+- HTTPS y cookies seguras están habilitados por defecto fuera de desarrollo. Railway se detecta por `RAILWAY_PROJECT_ID` y se reconoce automáticamente su cabecera `X-Forwarded-Proto`. En otros alojamientos con proxy confiable, configurar `DJANGO_TRUST_PROXY_SSL_HEADER=True`. Un valor explícito `False` deshabilita esta detección y puede causar un bucle de redirecciones detrás de Railway.
 - Las rutas generales requieren ventas o administrador. Los choferes conservan sesión, ruta y actualización operativa de sus propias notas; no pueden usar la actualización masiva ni modificar cobros.
 - El login tiene un límite básico de 10 solicitudes/minuto y el registro de 5/hora por IP. Configurar `DJANGO_NUM_PROXIES` según la infraestructura. La caché local se separa por proceso: para protección en producción se necesita también un límite en el proxy/WAF y una caché compartida; el throttling de DRF no garantiza protección contra fuerza bruta.
 - Cambiar una contraseña o desactivar un usuario revoca sus tokens. Los tokens actuales no tienen caducidad automática.
