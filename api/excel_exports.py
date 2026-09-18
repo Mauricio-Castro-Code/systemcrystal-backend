@@ -1,24 +1,23 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import date, datetime
-from decimal import Decimal
-from pathlib import Path
 import os
 import platform
 import re
 import shutil
 import subprocess
 import tempfile
-from typing import Literal
 import warnings
 import zipfile
+from dataclasses import dataclass
+from datetime import date, datetime
+from decimal import Decimal
+from pathlib import Path
+from typing import Literal
 
 from django.conf import settings
 from django.utils import timezone
 
 from .models import Order, Quotation
-
 
 MAX_TEMPLATE_ITEMS = 21
 ITEM_START_ROW = 21
@@ -267,8 +266,6 @@ def render_document_bundle(
     output_stem: str,
     cell_writes: list[DocumentCellWrite],
 ) -> GeneratedDocumentBundle:
-    from openpyxl import load_workbook
-
     # Los folios heredados pueden contener separadores o comillas; nunca son rutas.
     safe_stem = re.sub(r"[^A-Za-z0-9_-]", "_", str(output_stem))[:100] or "documento"
     with tempfile.TemporaryDirectory(prefix="crystal-documents-") as tmp:
@@ -276,26 +273,7 @@ def render_document_bundle(
         excel_output_path = tmp_path / f"{safe_stem}.xlsx"
         pdf_output_path = tmp_path / f"{safe_stem}.pdf"
 
-        # openpyxl emite warnings ruidosos por imagenes WMF de la plantilla.
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            wb = load_workbook(str(template_path))
-        ws = wb.worksheets[0]
-
-        _apply_page_setup(ws)
-        _apply_cell_writes(ws, cell_writes)
-
-        wb.save(str(excel_output_path))
-        wb.close()
-
-        if not excel_output_path.exists():
-            raise ExcelTemplateExportError(
-                "openpyxl no genero el archivo Excel esperado.",
-            )
-
-        # openpyxl descarta imagenes WMF (logos, iconos) al guardar.
-        # Las copiamos a nivel ZIP desde la plantilla original.
-        _restore_xlsx_media(template_path, excel_output_path)
+        render_excel_file(template_path, excel_output_path, cell_writes)
 
         _generate_pdf(excel_output_path, pdf_output_path, document_id=output_stem, cell_writes=cell_writes)
 
@@ -310,6 +288,25 @@ def render_document_bundle(
             pdf_bytes=pdf_output_path.read_bytes(),
             pdf_filename=pdf_output_path.name,
         )
+
+
+def render_excel_file(
+    template_path: Path, output_path: Path, cell_writes: list[DocumentCellWrite],
+) -> None:
+    """Genera únicamente Excel, sin arrancar LibreOffice ni generar un PDF."""
+    from openpyxl import load_workbook
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        workbook = load_workbook(str(template_path))
+    try:
+        worksheet = workbook.worksheets[0]
+        _apply_page_setup(worksheet)
+        _apply_cell_writes(worksheet, cell_writes)
+        workbook.save(str(output_path))
+    finally:
+        workbook.close()
+    _restore_xlsx_media(template_path, output_path)
 
 
 def _apply_page_setup(ws) -> None:
@@ -424,8 +421,9 @@ def _restore_xlsx_media(template_path: Path, output_path: Path) -> None:
     # Arrancamos con TODO el template
     final_data: dict[str, bytes] = dict(template_data)
 
-    # Trasplantar shared strings y calcChain del output (datos nuevos).
-    for name in ("xl/sharedStrings.xml", "xl/calcChain.xml"):
+    # Los índices de estilo de sheetData pertenecen al libro generado.
+    # Conservar sus estilos evita referencias inválidas al añadir formatos.
+    for name in ("xl/styles.xml", "xl/sharedStrings.xml", "xl/calcChain.xml"):
         if name in output_data:
             final_data[name] = output_data[name]
 
