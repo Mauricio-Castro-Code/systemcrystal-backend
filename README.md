@@ -83,6 +83,16 @@ python3 manage.py runserver
 - `GET /api/dashboard/overview/`
 - `GET /api/health/`
 
+## Respaldos manuales por sección
+
+- `GET /api/clients/export/excel/`: descarga `Clientes.xlsx`, con todos los clientes y una hoja de direcciones.
+- `GET /api/orders/export/excel/`: ZIP con un Excel por nota activa, usando la plantilla `Nota.xlsx` y el folio como nombre.
+- `GET /api/orders/archive/export/excel/`: el mismo ZIP para las notas recogidas del registro.
+
+Requieren ventas o administrador e incluyen toda la sección, independientemente de filtros o paginación. Las notas canceladas se incluyen en la sección correspondiente a su estado operativo. No se generan PDFs para estos respaldos. Una sección de notas vacía devuelve un ZIP vacío; clientes devuelve sus encabezados.
+
+La plantilla admite hasta 21 renglones de equipo por nota. Si una nota heredada excede ese límite, la descarga informa su folio y falla completa: no omite notas ni sustituye su formato por una tabla. El respaldo programado conserva su comportamiento anterior.
+
 ## Contrato de datos
 
 Las respuestas de clientes, cotizaciones y pedidos siguen la misma forma de datos que hoy consumen los servicios del frontend, para que la sustitucion de `localStorage` por llamadas HTTP sea directa.

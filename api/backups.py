@@ -136,8 +136,8 @@ def note_tables(orders):
     ]
 
 
-def write_individual_note(order, path):
-    if len(order.quotation.equipment_items.all()) > MAX_TEMPLATE_ITEMS:
+def write_individual_note(order, path, *, allow_tabular_fallback=True):
+    if allow_tabular_fallback and len(order.quotation.equipment_items.all()) > MAX_TEMPLATE_ITEMS:
         # Una nota heredada larga conserva TODOS sus renglones en formato tabular.
         save_tables(path, note_tables([order]))
         return "tabular"
