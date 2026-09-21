@@ -1,5 +1,7 @@
 from django.urls import path
 
+from .section_exports import ActiveOrdersExportView, ArchivedOrdersExportView, ClientDirectoryExportView
+
 from .views import (
     AccountingOverviewView,
     ClientAddressDetailView,
@@ -54,6 +56,7 @@ urlpatterns = [
     path("team/", TeamMemberListCreateView.as_view(), name="team-list"),
     path("team/<int:user_id>/", TeamMemberDetailView.as_view(), name="team-detail"),
     path("clients/", ClientListView.as_view(), name="client-list"),
+    path("clients/export/excel/", ClientDirectoryExportView.as_view(), name="clients-export-excel"),
     path("clients/<str:client_id>/", ClientDetailView.as_view(), name="client-detail"),
     path("clients/<str:client_id>/addresses/", ClientAddressListCreateView.as_view(), name="client-address-list"),
     path("clients/<str:client_id>/addresses/<int:addr_id>/", ClientAddressDetailView.as_view(), name="client-address-detail"),
@@ -86,6 +89,8 @@ urlpatterns = [
         name="quotation-confirm",
     ),
     path("orders/", OrderListCreateView.as_view(), name="order-list"),
+    path("orders/export/excel/", ActiveOrdersExportView.as_view(), name="active-orders-export-excel"),
+    path("orders/archive/export/excel/", ArchivedOrdersExportView.as_view(), name="archived-orders-export-excel"),
     path("orders/folio-options/", OrderFolioOptionsView.as_view(), name="order-folio-options"),
     path("orders/import/", OrderImportView.as_view(), name="order-import"),
     path("orders/my-route/", DriverRouteView.as_view(), name="order-my-route"),
