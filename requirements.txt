@@ -10,3 +10,4 @@ gunicorn==22.0.0
 whitenoise==6.8.2
 openai==3.13.0
 requests==2.34.2
+sqlparse==0.6.0

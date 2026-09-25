@@ -16,6 +16,7 @@ from .backups import (
 from .excel_exports import ExcelTemplateExportError
 from .models import Client, ClientAddress, Order
 from .permissions import IsAdminOrVentas
+from .throttling import DatabaseRateThrottle
 
 EXCEL_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
@@ -57,6 +58,8 @@ def notes_archive_response(orders, name):
 
 
 class ClientDirectoryExportView(APIView):
+    throttle_classes = [DatabaseRateThrottle]
+    throttle_scope = "bulk_export"
     permission_classes = [IsAdminOrVentas]
 
     def get(self, request):
@@ -72,6 +75,8 @@ class ClientDirectoryExportView(APIView):
 
 
 class ActiveOrdersExportView(APIView):
+    throttle_classes = [DatabaseRateThrottle]
+    throttle_scope = "bulk_export"
     permission_classes = [IsAdminOrVentas]
     archived = False
     filename = "Notas_Activas"

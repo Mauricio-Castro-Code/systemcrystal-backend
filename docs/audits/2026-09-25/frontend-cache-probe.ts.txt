@@ -1,0 +1,35 @@
+import { provideHttpClient } from '@angular/common/http';
+import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
+import { TestBed } from '@angular/core/testing';
+import { AuthService } from './auth.service';
+import { OrderRecordsService } from './order-records.service';
+import { API_BASE_URL } from '../config/api.config';
+
+describe('Audit evidence: session data isolation', () => {
+  it('confirms a note from a previous login remains readable after logout and a 403', async () => {
+    localStorage.clear();
+    TestBed.configureTestingModule({ providers: [provideHttpClient(), provideHttpClientTesting()] });
+    const auth = TestBed.inject(AuthService);
+    const records = TestBed.inject(OrderRecordsService);
+    const http = TestBed.inject(HttpTestingController);
+    const login = auth.signIn({ identifier: 'office', password: 'test' });
+    http.expectOne(`${API_BASE_URL}/auth/login/`).flush({ token: 'test-office', role: 'ventas', isAdmin: false });
+    await login;
+    const load = records.loadOrderById('1-26', true);
+    http.expectOne(`${API_BASE_URL}/orders/1-26/`).flush({ orderId: '1-26', clientName: 'Private previous session', totalEstimated: 9900 });
+    await load;
+    const logout = auth.signOut();
+    http.expectOne(`${API_BASE_URL}/auth/logout/`).flush({});
+    await logout;
+    const driverLogin = auth.signIn({ identifier: 'driver', password: 'test' });
+    http.expectOne(`${API_BASE_URL}/auth/login/`).flush({ token: 'test-driver', role: 'chofer', isAdmin: false });
+    await driverLogin;
+    const denied = records.loadOrderById('1-26', true).catch(() => null);
+    http.expectOne(`${API_BASE_URL}/orders/1-26/`).flush({}, { status: 403, statusText: 'Forbidden' });
+    await denied;
+    expect(records.getOrderById('1-26')?.clientName).toBe('Private previous session');
+    expect(records.getOrderById('1-26')?.totalEstimated).toBe(9900);
+    http.verify();
+    localStorage.clear();
+  });
+});

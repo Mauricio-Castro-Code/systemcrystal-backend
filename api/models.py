@@ -597,3 +597,9 @@ def set_user_role(user, role: str) -> None:
     if user.is_staff != is_admin:
         user.is_staff = is_admin
         user.save(update_fields=["is_staff"])
+
+
+class SecurityRateBucket(models.Model):
+    key = models.CharField(max_length=64, primary_key=True)
+    count = models.PositiveIntegerField(default=0)
+    expires_at = models.DateTimeField(db_index=True)

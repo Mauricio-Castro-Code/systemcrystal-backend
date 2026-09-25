@@ -3,7 +3,7 @@ import runpy
 from pathlib import Path
 from unittest.mock import patch
 
-from django.test import SimpleTestCase, override_settings
+from django.test import TestCase, override_settings
 
 
 @override_settings(
@@ -11,7 +11,7 @@ from django.test import SimpleTestCase, override_settings
     SECURE_SSL_REDIRECT=True,
     CORS_ALLOWED_ORIGINS=["https://systemcrystal-frontend.vercel.app"],
 )
-class RailwayProxyTests(SimpleTestCase):
+class RailwayProxyTests(TestCase):
     origin = "https://systemcrystal-frontend.vercel.app"
     login_url = "/api/auth/login/"
 

@@ -224,7 +224,7 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [
-        "rest_framework.authentication.TokenAuthentication",
+        "api.authentication.ExpiringTokenAuthentication",
     ],
     "DEFAULT_PERMISSION_CLASSES": [
         "api.permissions.IsAdminOrVentas",
@@ -283,3 +283,18 @@ DRIVER_ROUTE_START_ADDRESS = os.getenv("DRIVER_ROUTE_START_ADDRESS", "").strip()
 # (solo calle + colonia), y sin ese dato Google no geocodifica aunque la calle
 # esté bien escrita.
 DRIVER_ROUTE_DEFAULT_LOCALITY = os.getenv("DRIVER_ROUTE_DEFAULT_LOCALITY", "Puebla, Pue.").strip()
+
+AUTH_TOKEN_TTL_SECONDS = max(60, get_int("AUTH_TOKEN_TTL_SECONDS", 60 * 60))
+
+
+# Limits are shared in the database, not isolated in each Gunicorn worker.
+SECURITY_RATE_LIMITS = {
+    "login": [(10, 60)],
+    "register": [(5, 3600)],
+    "route_optimize": [(2, 60), (max(1, get_int("ROUTE_OPTIMIZE_DAILY_LIMIT", 30)), 86400)],
+    "route_constraint": [(10, 60), (max(1, get_int("ROUTE_CONSTRAINT_DAILY_LIMIT", 200)), 86400)],
+    "route_add": [(20, 60)],
+    "document_export": [(20, 60), (max(1, get_int("DOCUMENT_EXPORT_DAILY_LIMIT", 300)), 86400)],
+    "bulk_export": [(5, 60), (max(1, get_int("BULK_EXPORT_DAILY_LIMIT", 20)), 86400)],
+    "document_import": [(10, 60)],
+}

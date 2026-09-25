@@ -1,0 +1,64 @@
+from datetime import timedelta
+from django.contrib.auth import get_user_model
+from django.core.cache import cache
+from django.urls import reverse
+from django.utils import timezone
+from rest_framework.authtoken.models import Token
+from rest_framework.test import APITestCase
+from api.models import Order, UserProfile, set_user_role
+from api.tests import build_quotation_payload
+from api.views import DriverRouteOptimizeView, OrderRouteConstraintView
+
+class AuditEvidence(APITestCase):
+    def setUp(self):
+        cache.clear()
+        self.admin = get_user_model().objects.create_user(username='audit-admin', is_staff=True)
+        self.driver = get_user_model().objects.create_user(username='audit-driver')
+        self.other = get_user_model().objects.create_user(username='audit-other')
+        self.office = get_user_model().objects.create_user(username='audit-office')
+        for user in [self.driver, self.other]:
+            set_user_role(user, UserProfile.Role.CHOFER)
+        set_user_role(self.office, UserProfile.Role.VENTAS)
+
+    def test_confirm_driver_can_take_another_drivers_order(self):
+        self.client.force_authenticate(self.admin)
+        response = self.client.post(reverse('order-list'), build_quotation_payload(), format='json')
+        self.assertEqual(response.status_code, 201)
+        order = Order.objects.get(order_id=response.data['orderId'])
+        order.assigned_driver = self.other
+        order.save(update_fields=['assigned_driver'])
+        self.client.force_authenticate(self.driver)
+        response = self.client.post(reverse('order-my-route-add-order'), {'orderId': order.order_id}, format='json')
+        self.assertEqual(response.status_code, 200)
+        order.refresh_from_db()
+        self.assertEqual(order.assigned_driver_id, self.driver.pk)
+        self.assertEqual(response.data['clientName'], order.quotation.client_name)
+        print('CONFIRMED: driver reassigned another drivers note and received client data')
+
+    def test_confirm_old_token_is_accepted(self):
+        token = Token.objects.create(user=self.office)
+        Token.objects.filter(pk=token.pk).update(created=timezone.now()-timedelta(days=3650))
+        self.client.credentials(HTTP_AUTHORIZATION='Token '+token.key)
+        self.assertEqual(self.client.get(reverse('api-me')).status_code, 200)
+        print('CONFIRMED: a ten-year-old token is accepted without expiry')
+
+    def test_office_cannot_mutate_admin_resources(self):
+        self.client.force_authenticate(self.office)
+        endpoints = [
+            ('inventory-list', 'post', {}), ('inventory-detail', 'put', {'product_id':1}),
+            ('inventory-detail', 'delete', {'product_id':1}), ('client-list', 'post', {}),
+            ('freight-zone-list','post',{}), ('team-list','post',{}),
+            ('order-rename','post',{'order_id':'1-26'}), ('order-cancel','post',{'order_id':'1-26'}),
+            ('order-detail','delete',{'order_id':'1-26'}), ('quotation-detail','delete',{'quotation_id':'COT-1'}),
+            ('accounting-overview','get',{}),
+        ]
+        for name, method, kwargs in endpoints:
+            with self.subTest(name=name, method=method):
+                response = getattr(self.client, method)(reverse(name, kwargs=kwargs), {}, format='json')
+                self.assertEqual(response.status_code,403)
+        print('PASS: eleven admin operations denied to office via direct API requests')
+
+    def test_paid_services_have_no_application_throttles(self):
+        self.assertEqual(DriverRouteOptimizeView.throttle_classes, [])
+        self.assertEqual(OrderRouteConstraintView.throttle_classes, [])
+        print('CONFIRMED: optimize and constraint endpoints have no application throttle')

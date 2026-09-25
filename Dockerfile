@@ -27,7 +27,8 @@ ENV LC_ALL=es_MX.UTF-8
 WORKDIR /app
 
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --upgrade pip==26.2.1 \
+    && pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 

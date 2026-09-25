@@ -7,6 +7,8 @@ from datetime import date as calendar_date
 from datetime import datetime, time, timedelta
 from decimal import Decimal
 
+from .authentication import ExpiringTokenAuthentication, get_login_token
+
 from django.conf import settings
 from django.contrib.auth import authenticate, get_user_model
 from django.core.cache import cache
@@ -18,7 +20,6 @@ from django.utils import timezone
 from django.utils.crypto import constant_time_compare
 from django.utils.dateparse import parse_date
 from rest_framework import status
-from rest_framework.authentication import TokenAuthentication
 from rest_framework.authtoken.models import Token
 from rest_framework.exceptions import (
     AuthenticationFailed,
@@ -28,7 +29,7 @@ from rest_framework.exceptions import (
 )
 from rest_framework.permissions import AllowAny, IsAdminUser, IsAuthenticated
 from rest_framework.response import Response
-from rest_framework.throttling import ScopedRateThrottle
+from .throttling import DatabaseRateThrottle
 from rest_framework.views import APIView
 
 from .client_directory import (
@@ -295,7 +296,7 @@ class HealthCheckView(APIView):
 
 
 class LoginView(APIView):
-    throttle_classes = [ScopedRateThrottle]
+    throttle_classes = [DatabaseRateThrottle]
     throttle_scope = "login"
     permission_classes = [AllowAny]
     authentication_classes = []
@@ -317,12 +318,12 @@ class LoginView(APIView):
         if not user:
             raise AuthenticationFailed("Credenciales invalidas.")
 
-        token, _ = Token.objects.get_or_create(user=user)
+        token = get_login_token(user)
         return Response(build_user_session(user, token.key))
 
 
 class RegisterView(APIView):
-    throttle_classes = [ScopedRateThrottle]
+    throttle_classes = [DatabaseRateThrottle]
     throttle_scope = "register"
     permission_classes = [AllowAny]
     authentication_classes = []
@@ -378,7 +379,7 @@ class CurrentSessionView(APIView):
 class LogoutView(APIView):
     permission_classes = [IsAuthenticated]
 
-    authentication_classes = [TokenAuthentication]
+    authentication_classes = [ExpiringTokenAuthentication]
 
     def post(self, request):
         if request.auth:
@@ -742,6 +743,9 @@ class QuotationDetailView(APIView):
 
 
 class QuotationExcelExportView(APIView):
+    throttle_classes = [DatabaseRateThrottle]
+    throttle_scope = "document_export"
+
     def get(self, request, quotation_id: str):
         quotation = get_object_or_404(
             Quotation.objects.filter(status=Quotation.Status.DRAFT).prefetch_related(
@@ -761,6 +765,9 @@ class QuotationExcelExportView(APIView):
 
 
 class QuotationPdfExportView(APIView):
+    throttle_classes = [DatabaseRateThrottle]
+    throttle_scope = "document_export"
+
     def get(self, request, quotation_id: str):
         quotation = get_object_or_404(
             Quotation.objects.filter(status=Quotation.Status.DRAFT).prefetch_related(
@@ -808,6 +815,9 @@ class OrderFolioOptionsView(APIView):
 
 
 class OrderImportView(APIView):
+    throttle_classes = [DatabaseRateThrottle]
+    throttle_scope = "document_import"
+
     """Importa una nota desde un archivo Excel (.xlsx) con la plantilla de Crystal."""
 
     permission_classes = [IsAdminUser]
@@ -1000,6 +1010,9 @@ class OrderRenameView(APIView):
 
 
 class OrderExcelExportView(APIView):
+    throttle_classes = [DatabaseRateThrottle]
+    throttle_scope = "document_export"
+
     def get(self, request, order_id: str):
         order = get_object_or_404(get_order_base_queryset(), order_id=order_id)
 
@@ -1014,6 +1027,9 @@ class OrderExcelExportView(APIView):
 
 
 class OrderPdfExportView(APIView):
+    throttle_classes = [DatabaseRateThrottle]
+    throttle_scope = "document_export"
+
     def get(self, request, order_id: str):
         order = get_object_or_404(get_order_base_queryset(), order_id=order_id)
 
@@ -1194,6 +1210,9 @@ class DriverRouteView(APIView):
 
 
 class DriverRouteOptimizeView(APIView):
+    throttle_classes = [DatabaseRateThrottle]
+    throttle_scope = "route_optimize"
+
     """Recalcula el orden de la ruta del chofer autenticado usando Google Maps + IA."""
 
     permission_classes = [IsChofer]
@@ -1249,6 +1268,9 @@ class DriverRouteOptimizeView(APIView):
 
 
 class OrderRouteConstraintView(APIView):
+    throttle_classes = [DatabaseRateThrottle]
+    throttle_scope = "route_constraint"
+
     """Restricción operativa que el chofer agrega a una de sus paradas."""
 
     permission_classes = [IsChofer]
@@ -1282,18 +1304,25 @@ class OrderRouteConstraintView(APIView):
 
 
 class DriverRouteAddOrderView(APIView):
+    throttle_classes = [DatabaseRateThrottle]
+    throttle_scope = "route_add"
+
     """Permite al chofer agregar un pedido puntual (por folio exacto) a su jornada."""
 
     permission_classes = [IsChofer]
 
+    @transaction.atomic
     def post(self, request):
         serializer = DriverRouteAddOrderSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         order_id = serializer.validated_data["orderId"]
 
-        order = get_object_or_404(Order.objects.select_related("quotation"), order_id=order_id)
+        order = get_object_or_404(Order.objects.select_for_update().select_related("quotation"), order_id=order_id)
         if order.is_cancelled or order.operational_status == Order.OperationalStatus.RECOGIDO:
             raise ValidationError("Ese pedido ya no está activo.")
+
+        if order.assigned_driver_id not in (None, request.user.pk):
+            raise PermissionDenied("Esta nota pertenece a otro chofer. Solicita la reasignación a oficina.")
 
         assign_order_driver(order, driver=request.user, changed_by=request.user)
         return Response(build_driver_route_stop(order))
