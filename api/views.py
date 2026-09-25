@@ -5,6 +5,7 @@ import unicodedata
 from collections import defaultdict
 from datetime import date as calendar_date
 from datetime import datetime, time, timedelta
+from decimal import Decimal
 
 from django.conf import settings
 from django.contrib.auth import authenticate, get_user_model
@@ -1421,7 +1422,7 @@ class AccountingOverviewView(APIView):
         except ValueError:
             selected_year = today.year
 
-        cache_key = f"accounting_overview:{selected_year}"
+        cache_key = f"accounting_overview:v2:{selected_year}:{today.isoformat()}"
         cached = cache.get(cache_key)
         if cached is not None:
             return Response(cached)
@@ -1707,6 +1708,8 @@ class AccountingOverviewView(APIView):
         prev_ytd_revenue = 0.0
         month_revenue = 0.0
         year_costs = 0.0
+        year_freight = Decimal("0")
+        month_freight = Decimal("0")
         total_orders = 0
 
         for order in orders:
@@ -1716,6 +1719,10 @@ class AccountingOverviewView(APIView):
             d = self._order_date(order)
 
             if d.year == selected_year:
+                if d <= today:
+                    year_freight += order.quotation.freight
+                    if d.month == today.month:
+                        month_freight += order.quotation.freight
                 year_revenue += amount
                 year_costs += costs
                 if d.month == today.month:
@@ -1736,6 +1743,8 @@ class AccountingOverviewView(APIView):
             "ytdRevenue": round(ytd_revenue, 2),
             "prevYtdRevenue": round(prev_ytd_revenue, 2),
             "monthRevenue": round(month_revenue, 2),
+            "yearFreight": float(year_freight),
+            "monthFreight": float(month_freight),
             "yoyPct": yoy_pct,
             "prevYear": prev_year,
             "totalOrders": total_orders,
