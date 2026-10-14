@@ -131,6 +131,7 @@ def build_extra_cost(cost: OrderExtraCost) -> dict:
     return {
         "id": cost.pk,
         "concepto": cost.concepto,
+        "categoria": cost.categoria,
         "monto": cost.monto,
     }
 
@@ -165,6 +166,8 @@ def build_order_record(order) -> dict:
         "mapsUrl": order.maps_url or "",
         "officeClosed": order.office_closed,
         "extraCosts": extra_costs,
+        "retainedDeposit": order.retained_deposit,
+        "accountingRevenue": order.accounting_revenue,
         "totalExtraCosts": round(total_extra_costs, 2),
         "assignedDriver": build_driver_summary(order.assigned_driver),
         "quotation": build_quotation_note(quotation),

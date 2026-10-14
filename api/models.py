@@ -371,6 +371,13 @@ class Order(TimestampedModel):
         POR_COBRAR = "POR_COBRAR", "Por cobrar"
         COBRADO = "COBRADO", "Cobrado"
 
+    retained_deposit = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+
+    @property
+    def accounting_revenue(self):
+        q = self.quotation
+        return q.total_estimated - q.security_deposit - q.discount + self.retained_deposit
+
     order_id = models.CharField(max_length=20, unique=True, editable=False)
     quotation = models.OneToOneField(
         Quotation,
@@ -430,6 +437,14 @@ class Order(TimestampedModel):
 
 
 class OrderExtraCost(TimestampedModel):
+    class Category(models.TextChoices):
+        SUBARRENDOS = "SUBARRENDOS", "Subarrendos"
+        MESEROS = "MESEROS", "Meseros"
+        CARPAS = "CARPAS", "Carpas"
+        OTROS = "OTROS", "Otros"
+        UNCLASSIFIED = "UNCLASSIFIED", "Sin clasificar"
+
+    categoria = models.CharField(max_length=20, choices=Category.choices, default=Category.UNCLASSIFIED)
     order = models.ForeignKey(
         Order,
         related_name="extra_costs",

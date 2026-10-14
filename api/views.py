@@ -81,6 +81,8 @@ from .serializers import (
     LoginSerializer,
     OrderAssignmentSerializer,
     OrderExtraCostSerializer,
+    RetainedDepositSerializer,
+    ExpenseCategorySerializer,
     OrderRouteConstraintSerializer,
     OrderStatusUpdateSerializer,
     QuotationNoteSerializer,
@@ -1114,6 +1116,12 @@ class OrderAssignmentView(APIView):
         return Response(build_order_record(refreshed_order))
 
 
+def invalidate_order_accounting(order):
+    today = timezone.localdate()
+    year = (order.quotation.event_date or order.confirmed_at.date()).year
+    cache.delete_many([f"accounting_overview:v3:{value}:{today.isoformat()}" for value in (year, year + 1)])
+
+
 class OrderExtraCostsView(APIView):
     """Lista los costos externos de una nota y permite agregar uno nuevo."""
 
@@ -1129,11 +1137,22 @@ class OrderExtraCostsView(APIView):
         serializer.is_valid(raise_exception=True)
         OrderExtraCost.objects.create(
             order=order,
+            categoria=serializer.validated_data["categoria"],
             concepto=serializer.validated_data["concepto"],
             monto=serializer.validated_data["monto"],
         )
         refreshed_order = get_object_or_404(get_order_base_queryset(), pk=order.pk)
+        invalidate_order_accounting(refreshed_order)
         return Response(build_order_record(refreshed_order), status=status.HTTP_201_CREATED)
+
+    def patch(self, request, order_id: str):
+        order = get_object_or_404(get_order_base_queryset(), order_id=order_id)
+        serializer = RetainedDepositSerializer(data=request.data, context={"order": order})
+        serializer.is_valid(raise_exception=True)
+        order.retained_deposit = serializer.validated_data["retainedDeposit"]
+        order.save(update_fields=["retained_deposit"])
+        invalidate_order_accounting(order)
+        return Response(build_order_record(order))
 
 
 class OrderExtraCostDeleteView(APIView):
@@ -1141,10 +1160,22 @@ class OrderExtraCostDeleteView(APIView):
 
     permission_classes = [IsAdminOrVentas]
 
+    def patch(self, request, order_id: str, cost_id: int):
+        order = get_object_or_404(Order, order_id=order_id)
+        cost = get_object_or_404(OrderExtraCost, pk=cost_id, order=order)
+        serializer = ExpenseCategorySerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        cost.categoria = serializer.validated_data["categoria"]
+        cost.save(update_fields=["categoria"])
+        invalidate_order_accounting(order)
+        refreshed = get_object_or_404(get_order_base_queryset(), pk=order.pk)
+        return Response(build_order_record(refreshed))
+
     def delete(self, request, order_id: str, cost_id: int):
         order = get_object_or_404(Order, order_id=order_id)
         cost = get_object_or_404(OrderExtraCost, pk=cost_id, order=order)
         cost.delete()
+        invalidate_order_accounting(order)
         refreshed_order = get_object_or_404(get_order_base_queryset(), pk=order.pk)
         return Response(build_order_record(refreshed_order))
 
@@ -1451,7 +1482,7 @@ class AccountingOverviewView(APIView):
         except ValueError:
             selected_year = today.year
 
-        cache_key = f"accounting_overview:v2:{selected_year}:{today.isoformat()}"
+        cache_key = f"accounting_overview:v3:{selected_year}:{today.isoformat()}"
         cached = cache.get(cache_key)
         if cached is not None:
             return Response(cached)
@@ -1481,6 +1512,7 @@ class AccountingOverviewView(APIView):
             "availableYears": available_years,
             "summary": summary,
             "monthlySales": monthly_sales,
+            "expensesByCategory": self._expenses_by_category(year_orders),
             "topProducts": top_products,
             "topColors": top_colors,
             "topClients": top_clients,
@@ -1490,6 +1522,14 @@ class AccountingOverviewView(APIView):
 
     def _order_date(self, order) -> "calendar_date":
         return order.quotation.event_date or order.confirmed_at.date()
+
+    def _expenses_by_category(self, orders):
+        totals = {key: Decimal("0") for key, _ in OrderExtraCost.Category.choices}
+        for order in orders:
+            for cost in order.extra_costs.all():
+                totals[cost.categoria] += cost.monto
+        return [{"category": key, "label": label, "total": float(totals[key])}
+                for key, label in OrderExtraCost.Category.choices]
 
     def _order_costs(self, order) -> float:
         return sum(float(c.monto) for c in order.extra_costs.all())
@@ -1501,7 +1541,7 @@ class AccountingOverviewView(APIView):
         for order in orders:
             d = self._order_date(order)
             if d.year == year:
-                revenue_buckets[d.month] += float(order.quotation.total_estimated)
+                revenue_buckets[d.month] += float(order.accounting_revenue)
                 cost_buckets[d.month] += self._order_costs(order)
 
         return [
@@ -1611,7 +1651,7 @@ class AccountingOverviewView(APIView):
             key = normalize_text(raw_name)
 
             order_counts[key] += 1
-            revenue_map[key] += float(quotation.total_estimated)
+            revenue_map[key] += float(order.accounting_revenue)
             display_name.setdefault(key, raw_name)
 
             if client:
@@ -1743,7 +1783,7 @@ class AccountingOverviewView(APIView):
 
         for order in orders:
             total_orders += 1
-            amount = float(order.quotation.total_estimated)
+            amount = float(order.accounting_revenue)
             costs = self._order_costs(order)
             d = self._order_date(order)
 

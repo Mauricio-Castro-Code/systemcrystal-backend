@@ -114,7 +114,7 @@ def note_rows(orders):
             note.security_deposit, note.total_estimated, note.discount, note.advance_payment,
             note.total_estimated - note.discount - note.advance_payment,
             order.maps_url, order.assigned_driver_id, "Sí" if order.office_closed else "No",
-            local_datetime(order.confirmed_at), local_datetime(order.updated_at),
+            local_datetime(order.confirmed_at), local_datetime(order.updated_at), order.retained_deposit, order.accounting_revenue,
         )
 
 
@@ -124,12 +124,12 @@ def note_tables(orders):
                    "Referencia", "Instrucciones", "Entrega", "Evento", "Recolección", "Estado operativo",
                    "Estado cobro", "Cancelada", "Subtotal", "Flete", "IVA", "Depósito", "Total",
                    "Descuento", "Anticipo", "Saldo", "Enlace Maps", "ID chofer", "Registro cerrado",
-                   "Confirmada", "Actualizada"], note_rows(orders)),
+                   "Confirmada", "Actualizada", "Depósito retenido", "Ingreso contable"], note_rows(orders)),
         ("Artículos", ["Folio", "ID artículo", "ID producto", "Cantidad", "Equipo", "Precio unitario", "Importe"],
          ((o.order_id, i.pk, i.inventory_product_id, i.quantity, i.equipment, i.unit_price, i.total)
           for o in orders for i in o.quotation.equipment_items.all())),
-        ("Costos extra", ["Folio", "Concepto", "Monto", "Fecha"],
-         ((o.order_id, c.concepto, c.monto, local_datetime(c.created_at)) for o in orders for c in o.extra_costs.all())),
+        ("Costos extra", ["Folio", "Concepto", "Monto", "Fecha", "Categoría"],
+         ((o.order_id, c.concepto, c.monto, local_datetime(c.created_at), c.get_categoria_display()) for o in orders for c in o.extra_costs.all())),
         ("Historial", ["Folio", "Categoría", "Estado anterior", "Estado nuevo", "Comentario", "ID usuario", "Fecha"],
          ((o.order_id, e.get_category_display(), e.from_status, e.to_status, e.comment, e.changed_by_id,
            local_datetime(e.created_at)) for o in orders for e in o.workflow_events.all())),

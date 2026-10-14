@@ -5,6 +5,7 @@ import datetime
 from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
+from rest_framework.exceptions import ValidationError
 
 from . import route_optimization
 from .models import (
@@ -514,6 +515,8 @@ def create_order_from_imported_note(
 
 @transaction.atomic
 def update_order_from_note(order: Order, note: dict) -> Order:
+    if note["logistics"]["securityDeposit"] < order.retained_deposit:
+        raise ValidationError({"securityDeposit": "El depósito no puede ser menor al monto retenido. Ajusta primero el registro de costos."})
     apply_note_to_quotation(order.quotation, note)
     # La nota cambió (cantidades, artículos, etc.): lo impreso ya no coincide.
     order.printed_at = None

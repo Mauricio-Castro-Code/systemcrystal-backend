@@ -74,3 +74,84 @@ class AccountingFreightTests(APITestCase):
         summary = self.summary()
         self.assertEqual(summary["yearFreight"], 42.50)
         self.assertEqual(summary["monthFreight"], 42.50)
+
+
+class ExpenseCategoryTests(AccountingFreightTests):
+    def test_categories_are_saved_and_summed_by_event_year(self):
+        from .models import OrderExtraCost
+        order = self.create_order(date(2026, 9, 1), '0')
+        url = reverse('order-costs', args=[order.order_id])
+        for category, amount in [('CARPAS', 100), ('MESEROS', 200), ('SUBARRENDOS', 50), ('OTROS', 25)]:
+            response = self.client.post(url, {'categoria': category, 'concepto': 'Proveedor', 'monto': amount})
+            self.assertEqual(response.status_code, 201)
+            self.assertEqual(response.data['extraCosts'][-1]['categoria'], category)
+        OrderExtraCost.objects.create(order=order, concepto='Histórico', monto=10)
+        other_year = self.create_order(date(2025, 9, 1), '0')
+        OrderExtraCost.objects.create(order=other_year, categoria='CARPAS', concepto='Anterior', monto=999)
+        cancelled = self.create_order(date(2026, 9, 1), '0', cancelled=True)
+        OrderExtraCost.objects.create(order=cancelled, categoria='CARPAS', concepto='Cancelado', monto=999)
+        response = self.client.get(reverse('accounting-overview'), {'year': 2026})
+        totals = {row['category']: row['total'] for row in response.data['expensesByCategory']}
+        self.assertEqual(totals, {'CARPAS': 100, 'MESEROS': 200, 'SUBARRENDOS': 50, 'OTROS': 25, 'UNCLASSIFIED': 10})
+        self.assertEqual(response.data['summary']['yearExtraCosts'], 385)
+
+    def test_deposit_and_discount_are_excluded_and_retained_deposit_counted_once(self):
+        order = self.create_order(date(2026, 9, 1), '100')
+        order.quotation.security_deposit = 200
+        order.quotation.discount = 50
+        order.quotation.save()
+        self.assertEqual(self.summary()['yearRevenue'], 750)
+        url = reverse('order-costs', args=[order.order_id])
+        response = self.client.patch(url, {'retainedDeposit': 75}, format='json')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data['accountingRevenue'], 825)
+        response = self.client.get(reverse('accounting-overview'), {'year': 2026})
+        self.assertEqual(response.data['summary']['yearRevenue'], 825)
+        self.assertEqual(response.data['summary']['yearUtility'], 825)
+        self.assertEqual(response.data['monthlySales'][8]['value'], 825)
+        self.assertEqual(response.data['topClients'][0]['totalSales'], 825)
+        self.assertEqual(response.data['summary']['yearExtraCosts'], 0)
+        self.client.patch(url, {'retainedDeposit': 0}, format='json')
+        self.assertEqual(self.summary()['yearRevenue'], 750)
+
+    def test_rejects_invalid_category_and_retention_outside_deposit(self):
+        order = self.create_order(date(2026, 9, 1), '0')
+        url = reverse('order-costs', args=[order.order_id])
+        for category in ['DESCUENTOS', 'DEVOLUCION_DEPOSITO', 'invalido']:
+            self.assertEqual(self.client.post(url, {'categoria': category, 'concepto': category, 'monto': 10}).status_code, 400)
+        for amount in [-1, 1, 'NaN']:
+            self.assertEqual(self.client.patch(url, {'retainedDeposit': amount}, format='json').status_code, 400)
+
+    def test_cost_creation_and_deletion_refresh_accounting(self):
+        order = self.create_order(date(2026, 9, 1), '0')
+        self.assertEqual(self.summary()['yearExtraCosts'], 0)
+        response = self.client.post(reverse('order-costs', args=[order.order_id]),
+                                    {'categoria': 'CARPAS', 'concepto': 'Carpa', 'monto': 100})
+        self.assertEqual(self.summary()['yearExtraCosts'], 100)
+        cost_id = response.data['extraCosts'][0]['id']
+        self.client.delete(reverse('order-cost-delete', args=[order.order_id, cost_id]))
+        self.assertEqual(self.summary()['yearExtraCosts'], 0)
+
+    def test_reclassifying_historical_cost_keeps_description_and_amount(self):
+        from .models import OrderExtraCost
+        order = self.create_order(date(2026, 9, 1), '0')
+        cost = OrderExtraCost.objects.create(order=order, concepto='Carpa proveedor anterior', monto=100)
+        self.summary()
+        response = self.client.patch(reverse('order-cost-delete', args=[order.order_id, cost.pk]),
+                                     {'categoria': 'CARPAS'}, format='json')
+        self.assertEqual(response.status_code, 200)
+        cost.refresh_from_db()
+        self.assertEqual(cost.categoria, 'CARPAS')
+        self.assertEqual(cost.concepto, 'Carpa proveedor anterior')
+        self.assertEqual(cost.monto, 100)
+        response = self.client.get(reverse('accounting-overview'), {'year': 2026})
+        self.assertEqual(next(row['total'] for row in response.data['expensesByCategory'] if row['category'] == 'CARPAS'), 100)
+
+    def test_editing_note_cannot_reduce_deposit_below_retained_amount(self):
+        from decimal import Decimal
+        from rest_framework.exceptions import ValidationError
+        from .services import update_order_from_note
+        order = self.create_order(date(2026, 9, 1), '0')
+        order.retained_deposit = Decimal('50')
+        with self.assertRaises(ValidationError):
+            update_order_from_note(order, {"logistics": {"securityDeposit": Decimal('25')}})

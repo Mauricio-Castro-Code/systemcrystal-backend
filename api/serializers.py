@@ -9,6 +9,7 @@ from rest_framework import serializers
 
 from .models import (
     InventoryProduct,
+    OrderExtraCost,
     Order,
     OrderRouteConstraint,
     UserProfile,
@@ -284,7 +285,21 @@ class QuotationNoteSerializer(serializers.Serializer):
         return normalized_items
 
 
+class ExpenseCategorySerializer(serializers.Serializer):
+    categoria = serializers.ChoiceField(choices=OrderExtraCost.Category.choices)
+
+
+class RetainedDepositSerializer(serializers.Serializer):
+    retainedDeposit = serializers.DecimalField(max_digits=12, decimal_places=2, min_value=Decimal("0"))
+
+    def validate_retainedDeposit(self, value):
+        if value > self.context["order"].quotation.security_deposit:
+            raise serializers.ValidationError("El monto retenido no puede superar el depósito de garantía.")
+        return value
+
+
 class OrderExtraCostSerializer(serializers.Serializer):
+    categoria = serializers.ChoiceField(choices=OrderExtraCost.Category.choices, default=OrderExtraCost.Category.UNCLASSIFIED)
     concepto = serializers.CharField(max_length=220, allow_blank=False)
     monto = serializers.DecimalField(max_digits=12, decimal_places=2, min_value=Decimal("0.01"))
 
