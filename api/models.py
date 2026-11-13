@@ -259,6 +259,8 @@ class InventoryProduct(TimestampedModel):
     name_key = models.CharField(max_length=120, unique=True, editable=False)
     quantity = models.PositiveIntegerField(default=0)
     unit_price = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    high_season_price = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True, default=None)
+    replacement_cost = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     category = models.CharField(
         max_length=20, choices=Category.choices, default=Category.OTROS
     )

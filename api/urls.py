@@ -1,3 +1,4 @@
+from .inventory_excel import InventoryExcelExportView, InventoryImportPreviewView, InventoryImportConfirmView
 from django.urls import path
 
 from .section_exports import ActiveOrdersExportView, ArchivedOrdersExportView, ClientDirectoryExportView
@@ -60,6 +61,9 @@ urlpatterns = [
     path("clients/<str:client_id>/", ClientDetailView.as_view(), name="client-detail"),
     path("clients/<str:client_id>/addresses/", ClientAddressListCreateView.as_view(), name="client-address-list"),
     path("clients/<str:client_id>/addresses/<int:addr_id>/", ClientAddressDetailView.as_view(), name="client-address-detail"),
+    path("inventory/export/excel/", InventoryExcelExportView.as_view(), name="inventory-export-excel"),
+    path("inventory/import/preview/", InventoryImportPreviewView.as_view(), name="inventory-import-preview"),
+    path("inventory/import/confirm/", InventoryImportConfirmView.as_view(), name="inventory-import-confirm"),
     path("inventory/", InventoryListCreateView.as_view(), name="inventory-list"),
     path("inventory/<int:product_id>/", InventoryDetailView.as_view(), name="inventory-detail"),
     path("quotations/", QuotationListCreateView.as_view(), name="quotation-list"),

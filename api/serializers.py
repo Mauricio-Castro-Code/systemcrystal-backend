@@ -84,6 +84,10 @@ class InventoryItemSerializer(serializers.ModelSerializer):
         decimal_places=2,
         min_value=Decimal("0.00"),
     )
+    highSeasonPrice = serializers.DecimalField(source="high_season_price", max_digits=12,
+        decimal_places=2, min_value=Decimal("0.00"), required=False, allow_null=True)
+    replacementCost = serializers.DecimalField(source="replacement_cost", max_digits=12,
+        decimal_places=2, min_value=Decimal("0.00"), required=False)
     category = serializers.ChoiceField(
         choices=InventoryProduct.Category.choices,
         default=InventoryProduct.Category.OTROS,
@@ -91,7 +95,7 @@ class InventoryItemSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = InventoryProduct
-        fields = ("id", "name", "quantity", "unitPrice", "category")
+        fields = ("id", "name", "quantity", "unitPrice", "category", "highSeasonPrice", "replacementCost")
 
     def validate_name(self, value: str) -> str:
         normalized_name = str(value or "").strip()
